@@ -166,6 +166,32 @@ body {
   gap: 0.55rem;
 }
 
+/* Setup mode: center the gateway connect card in a single-column layout. */
+body:not(.sidebar-enabled) .shell {
+  padding: 0.85rem;
+}
+
+body:not(.sidebar-enabled) .workspace {
+  height: 100%;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 1fr;
+  gap: 0;
+  align-items: center;
+  justify-items: center;
+}
+
+body:not(.sidebar-enabled) .chat-column {
+  width: min(34rem, 94vw);
+  height: auto;
+  min-height: 0;
+}
+
+body:not(.sidebar-enabled) .token-panel {
+  width: 100%;
+  max-width: 34rem;
+  margin: 0 auto;
+}
+
 .panel,
 .session-pane {
   border: 1px solid var(--line);
