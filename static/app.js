@@ -92,6 +92,9 @@ const executionHistoryBySession = new Map();
 let executionPersistTimer = null;
 let executionPersistInFlight = false;
 let executionPersistPending = null;
+const GRAPH_MIN_SCALE = 0.08;
+const GRAPH_MAX_SCALE = 3.2;
+const GRAPH_AUTOFIT_MIN_SCALE = 0.2;
 const fileViewerState = {
   initialized: false,
   loadingDirectory: false,
@@ -111,6 +114,7 @@ const graphState = {
   draggingNodeId: null,
   dragStart: null,
   needsSpreadPass: false,
+  autoFitPending: false,
 };
 
 function decodeEscapedSequences(text) {
@@ -1089,7 +1093,7 @@ function fitGraphViewportToNodes() {
   const canvasHeight = Math.max(1, graphCanvas.clientHeight || 1);
   const padding = 64;
   const fitScale = Math.min((canvasWidth - padding) / width, (canvasHeight - padding) / height);
-  const scale = Math.max(0.3, Math.min(1.9, Number.isFinite(fitScale) ? fitScale : 1));
+  const scale = Math.max(GRAPH_AUTOFIT_MIN_SCALE, Math.min(1.9, Number.isFinite(fitScale) ? fitScale : 1));
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
 
@@ -1312,6 +1316,10 @@ function renderGraph() {
     spreadGraphNodes();
     graphState.needsSpreadPass = false;
   }
+  if (graphState.autoFitPending) {
+    fitGraphViewportToNodes();
+    graphState.autoFitPending = false;
+  }
   graphNodesLayer.innerHTML = "";
   graphEdgesLayer.innerHTML = "";
 
@@ -1325,6 +1333,7 @@ function renderGraph() {
   }
 
   const nodeScreenMap = new Map();
+  const visualScale = Math.max(0.06, Math.min(2.2, graphState.viewport.scale));
   for (const node of graphState.nodes) {
     const screen = worldToScreen(node);
     nodeScreenMap.set(node.id, screen);
@@ -1338,6 +1347,7 @@ function renderGraph() {
     nodeBtn.dataset.nodeId = node.id;
     nodeBtn.style.left = `${screen.x}px`;
     nodeBtn.style.top = `${screen.y}px`;
+    nodeBtn.style.transform = `translate(-50%, -50%) scale(${visualScale})`;
 
     const title = document.createElement("div");
     title.className = "graph-node-title";
@@ -1385,8 +1395,11 @@ function renderGraph() {
     line.setAttribute("x2", String(to.x));
     line.setAttribute("y2", String(to.y));
     line.classList.add("graph-edge");
+    const edgeWidth = Math.max(0.35, Math.min(2.5, 1.2 * visualScale));
+    line.style.strokeWidth = String(edgeWidth);
     if (graphState.selectedNodeId && (edge.from === graphState.selectedNodeId || edge.to === graphState.selectedNodeId)) {
       line.classList.add("selected");
+      line.style.strokeWidth = String(Math.max(0.5, Math.min(3.4, 2.1 * visualScale)));
     }
     graphEdgesLayer.appendChild(line);
   }
@@ -1448,6 +1461,7 @@ async function loadGraphForSession(sessionId, { force = false } = {}) {
     graphState.selectedNodeId = null;
     graphState.loadedSessionId = null;
     graphState.needsSpreadPass = false;
+    graphState.autoFitPending = false;
     renderGraph();
     return;
   }
@@ -1463,11 +1477,14 @@ async function loadGraphForSession(sessionId, { force = false } = {}) {
     graphState.loadedSessionId = sessionId;
     const incomingNodes = Array.isArray(payload.nodes) ? payload.nodes.map(normalizeGraphNode).filter(Boolean) : [];
     const incomingEdges = Array.isArray(payload.edges) ? payload.edges.map(normalizeGraphEdge).filter(Boolean) : [];
+    const hasUnpositionedNodes = incomingNodes.some(
+      (node) => !Number.isFinite(node.x) || !Number.isFinite(node.y)
+    );
 
     graphState.nodes = incomingNodes;
     graphState.edges = incomingEdges;
-    graphState.needsSpreadPass = true;
-    fitGraphViewportToNodes();
+    graphState.needsSpreadPass = hasUnpositionedNodes;
+    graphState.autoFitPending = true;
     if (graphState.selectedNodeId && !graphNodeById(graphState.selectedNodeId)) {
       graphState.selectedNodeId = null;
     }
@@ -1486,6 +1503,7 @@ async function ensureGraphViewReady(force = false) {
     graphState.edges = [];
     graphState.selectedNodeId = null;
     graphState.needsSpreadPass = false;
+    graphState.autoFitPending = false;
     renderGraph();
     return;
   }
@@ -1574,7 +1592,7 @@ function setupGraphInteractions() {
       const worldX = (cursorX - cx - graphState.viewport.x) / scale;
       const worldY = (cursorY - cy - graphState.viewport.y) / scale;
       const delta = event.deltaY < 0 ? 1.08 : 0.92;
-      const nextScale = Math.max(0.3, Math.min(3.2, graphState.viewport.scale * delta));
+      const nextScale = Math.max(GRAPH_MIN_SCALE, Math.min(GRAPH_MAX_SCALE, graphState.viewport.scale * delta));
       graphState.viewport.scale = nextScale;
       graphState.viewport.x = cursorX - cx - worldX * nextScale;
       graphState.viewport.y = cursorY - cy - worldY * nextScale;
@@ -1584,7 +1602,7 @@ function setupGraphInteractions() {
   );
 
   graphResetBtn?.addEventListener("click", () => {
-    fitGraphViewportToNodes();
+    graphState.autoFitPending = true;
     renderGraph();
   });
 
