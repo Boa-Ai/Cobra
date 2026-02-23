@@ -8,6 +8,7 @@ from typing import Any
 from cobra_lite.config import CHAT_HISTORY_MAX_CHARS, CHAT_HISTORY_MAX_MESSAGES
 
 VALID_ROLES = {"user", "assistant"}
+MAX_EXECUTION_HTML_CHARS = 600_000
 
 
 class SessionStore:
@@ -103,6 +104,9 @@ class SessionStore:
         title = str(session.get("title") or "").strip()
         if not title:
             title = self._first_user_line(messages) or "New Chat"
+        execution_html = str(session.get("execution_html") or "")
+        if len(execution_html) > MAX_EXECUTION_HTML_CHARS:
+            execution_html = execution_html[-MAX_EXECUTION_HTML_CHARS:]
 
         return {
             "id": session_id,
@@ -110,6 +114,7 @@ class SessionStore:
             "created_at": float(created_at),
             "updated_at": float(updated_at),
             "messages": messages,
+            "execution_html": execution_html,
         }
 
     def _ensure_session(self, state: dict[str, Any], session_id: str) -> dict[str, Any]:
@@ -124,6 +129,7 @@ class SessionStore:
                 "created_at": now,
                 "updated_at": now,
                 "messages": [],
+                "execution_html": "",
             }
         sessions[session_id] = normalized
         return normalized
@@ -190,10 +196,30 @@ class SessionStore:
                 "created_at": now,
                 "updated_at": now,
                 "messages": [],
+                "execution_html": "",
             }
             sessions = state.setdefault("sessions", {})
             sessions[session_id] = session
             state["last_session_id"] = session_id
+            self._save(state)
+            return session
+
+    def update_execution_html(self, session_id: str, html: str) -> dict[str, Any] | None:
+        with self._lock:
+            state = self._load()
+            sessions = state.get("sessions")
+            if not isinstance(sessions, dict):
+                return None
+            raw = sessions.get(session_id)
+            session = self._normalize_session(raw, session_id) if raw is not None else None
+            if not session:
+                return None
+            text = str(html or "")
+            if len(text) > MAX_EXECUTION_HTML_CHARS:
+                text = text[-MAX_EXECUTION_HTML_CHARS:]
+            session["execution_html"] = text
+            session["updated_at"] = time.time()
+            sessions[session_id] = session
             self._save(state)
             return session
 

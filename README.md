@@ -132,10 +132,9 @@ Cobra Lite can:
 
 Cobra Lite now maintains a per-session graph as shared mission memory:
 - **Graph tab**: interactive graph canvas (pan/zoom/drag) plus node inspector
-- **Unified context**: terminal events stream into graph nodes/edges in real time
+- **Curated structure**: nodes/edges are manually authored by the operator
 - **Persistent memory**: graph state is stored in `.claw_graph.json`
-- **Agent memory loop**: graph context is injected into agent prompts, and optional
-  `<graph_update>{...}</graph_update>` blocks in final responses are applied to graph state
+- **Agent memory loop**: graph context is injected into agent prompts as read-only mission memory
 
 ## Architecture
 

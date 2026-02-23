@@ -115,4 +115,6 @@ Final response format (always follow):
 - Objective
 - Actions Taken (include notable commands/tools used)
 - Findings
-- Recommended Next Steps""".format(missing_tool_policy=MISSING_TOOL_SECURITY_POLICY)
+- Recommended Next Steps""".format(
+    missing_tool_policy=MISSING_TOOL_SECURITY_POLICY
+)

@@ -74,6 +74,9 @@ let isRunning = false;
 let autoScrollEnabled = true;
 let unseenEventCount = 0;
 let jumpLatestBtn = null;
+let activeRunAbortController = null;
+let activeRunStopRequested = false;
+let activeRunMeta = null;
 const ACTIVE_SESSION_STORAGE_KEY = "cobraLite.activeSessionId.v1";
 const SESSION_PANE_COLLAPSED_KEY = "cobraLite.sessionPaneCollapsed.v1";
 const EXECUTION_WIDTH_STORAGE_KEY = "cobraLite.executionPaneWidth.v1";
@@ -85,6 +88,10 @@ let sessionSummaries = [];
 let anthropicConfigured = hasAnthropicKey;
 let sessionPaneCollapsed = false;
 let paneResizeHandlersBound = false;
+const executionHistoryBySession = new Map();
+let executionPersistTimer = null;
+let executionPersistInFlight = false;
+let executionPersistPending = null;
 const fileViewerState = {
   initialized: false,
   loadingDirectory: false,
@@ -103,6 +110,7 @@ const graphState = {
   pan: null,
   draggingNodeId: null,
   dragStart: null,
+  needsSpreadPass: false,
 };
 
 function decodeEscapedSequences(text) {
@@ -567,8 +575,48 @@ function setRunningState(running) {
     promptInput.disabled = running;
   }
   if (promptSubmit) {
-    promptSubmit.disabled = running;
-    promptSubmit.textContent = running ? "Running..." : "Send";
+    promptSubmit.disabled = false;
+    promptSubmit.classList.toggle("stop-mode", running);
+    if (running) {
+      promptSubmit.textContent = activeRunStopRequested ? "Stopping..." : "Stop";
+      promptSubmit.setAttribute("aria-label", "Stop current run");
+      promptSubmit.title = "Stop current run";
+    } else {
+      promptSubmit.textContent = "Send";
+      promptSubmit.removeAttribute("aria-label");
+      promptSubmit.removeAttribute("title");
+    }
+  }
+  if (!running) {
+    activeRunAbortController = null;
+    activeRunStopRequested = false;
+    activeRunMeta = null;
+  }
+}
+
+async function requestStopActiveRun() {
+  if (!isRunning || activeRunStopRequested) return;
+  activeRunStopRequested = true;
+  if (promptSubmit) {
+    promptSubmit.textContent = "Stopping...";
+  }
+  setStatus(promptStatus, "Stopping run...", false);
+
+  try {
+    const payload = {};
+    if (activeRunMeta?.sessionId) payload.session_id = activeRunMeta.sessionId;
+    if (activeRunMeta?.runId) payload.run_id = activeRunMeta.runId;
+    await fetchJson("/api/prompt/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (_error) {
+    // Ignore stop endpoint failures; we still abort local stream below.
+  }
+
+  if (activeRunAbortController) {
+    activeRunAbortController.abort();
   }
 }
 
@@ -633,6 +681,42 @@ function isMissingAnthropicKeyError(error) {
   }
   const message = normalizeText(error.message, "").toLowerCase();
   return message.includes('no api key found for provider "anthropic"');
+}
+
+function isAnthropicAuthInvalidError(error) {
+  if (!error) return false;
+  if (error.code === "provider_auth_invalid") {
+    return (error.provider || "").toLowerCase() === "anthropic";
+  }
+  const message = normalizeText(error.message, "").toLowerCase();
+  return (
+    message.includes("invalid x-api-key") ||
+    message.includes("authentication failed") ||
+    message.includes("unauthorized")
+  );
+}
+
+function isGatewayConnectivityError(error) {
+  if (!error) return false;
+  if (error.code === "gateway_connectivity") return true;
+  const message = normalizeText(error.message, "").toLowerCase();
+  return (
+    message.includes("websocket transport is unavailable") ||
+    message.includes("gateway connect failed") ||
+    message.includes("cannot reach gateway") ||
+    message.includes("connection refused") ||
+    message.includes("timed out")
+  );
+}
+
+function openSettingsModal(message = "") {
+  if (!settingsModal) return;
+  settingsModal.classList.remove("hidden");
+  setStatus(settingsStatus, message || "", Boolean(!message));
+  if (settingsKeyInput && !settingsKeyInput.value.trim()) {
+    settingsKeyInput.value = defaultGatewayUrl;
+  }
+  settingsKeyInput?.focus();
 }
 
 function openAuthModal(message = "") {
@@ -932,6 +1016,7 @@ function normalizeGraphNode(rawNode) {
     type: normalizeText(rawNode.type, "Note") || "Note",
     label: normalizeText(rawNode.label, "Untitled node") || "Untitled node",
     description: normalizeText(rawNode.description, ""),
+    created_by: normalizeText(rawNode.created_by, ""),
     status: normalizeText(rawNode.status, "new") || "new",
     severity: normalizeText(rawNode.severity, "info") || "info",
     confidence:
@@ -973,6 +1058,46 @@ function resetGraphViewport() {
   graphState.viewport = { x: 0, y: 0, scale: 1 };
 }
 
+function fitGraphViewportToNodes() {
+  if (!graphCanvas || !graphState.nodes.length) {
+    resetGraphViewport();
+    return;
+  }
+  const positioned = graphState.nodes.filter((node) => Number.isFinite(node.x) && Number.isFinite(node.y));
+  if (!positioned.length) {
+    resetGraphViewport();
+    return;
+  }
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const node of positioned) {
+    const radius = graphNodeCollisionRadius(node);
+    const x = Number(node.x) || 0;
+    const y = Number(node.y) || 0;
+    minX = Math.min(minX, x - radius);
+    maxX = Math.max(maxX, x + radius);
+    minY = Math.min(minY, y - radius);
+    maxY = Math.max(maxY, y + radius);
+  }
+
+  const width = Math.max(1, maxX - minX);
+  const height = Math.max(1, maxY - minY);
+  const canvasWidth = Math.max(1, graphCanvas.clientWidth || 1);
+  const canvasHeight = Math.max(1, graphCanvas.clientHeight || 1);
+  const padding = 64;
+  const fitScale = Math.min((canvasWidth - padding) / width, (canvasHeight - padding) / height);
+  const scale = Math.max(0.3, Math.min(1.9, Number.isFinite(fitScale) ? fitScale : 1));
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+
+  graphState.viewport.scale = scale;
+  graphState.viewport.x = -centerX * scale;
+  graphState.viewport.y = -centerY * scale;
+}
+
 function graphCenterOffset() {
   if (!graphCanvas) {
     return { cx: 0, cy: 0 };
@@ -1003,37 +1128,133 @@ function screenToWorld(clientX, clientY) {
 }
 
 function ensureGraphLayout() {
-  const typeSeen = new Map();
   const ringOrder = [
     "Objective",
     "Scope",
     "Asset",
     "Surface",
     "Hypothesis",
-    "Action",
-    "Evidence",
     "Finding",
     "Risk",
     "Recommendation",
+    "Action",
+    "Evidence",
     "Artifact",
     "Agent",
     "Note",
     "Run",
   ];
-
-  graphState.nodes.forEach((node) => {
+  const byType = new Map();
+  for (const node of graphState.nodes) {
     if (Number.isFinite(node.x) && Number.isFinite(node.y)) {
-      return;
+      continue;
     }
-    const type = node.type || "Note";
-    const typeIndex = Math.max(0, ringOrder.indexOf(type));
-    const seen = typeSeen.get(type) || 0;
-    typeSeen.set(type, seen + 1);
-    const angle = seen * 0.9 + typeIndex * 0.46;
-    const radius = 130 + typeIndex * 52;
-    node.x = Math.cos(angle) * radius;
-    node.y = Math.sin(angle) * radius;
+    const type = normalizeText(node.type, "Note") || "Note";
+    if (!byType.has(type)) {
+      byType.set(type, []);
+    }
+    byType.get(type).push(node);
+  }
+  const types = Array.from(byType.keys()).sort((a, b) => {
+    const aIdx = ringOrder.indexOf(a);
+    const bIdx = ringOrder.indexOf(b);
+    const aNorm = aIdx >= 0 ? aIdx : ringOrder.length + 1;
+    const bNorm = bIdx >= 0 ? bIdx : ringOrder.length + 1;
+    return aNorm - bNorm;
   });
+
+  types.forEach((type, typeIdx) => {
+    const nodes = byType.get(type) || [];
+    if (!nodes.length) return;
+    const angle = (typeIdx / Math.max(1, types.length)) * Math.PI * 2;
+    const anchorRadius = 260 + typeIdx * 38;
+    const anchorX = Math.cos(angle) * anchorRadius;
+    const anchorY = Math.sin(angle) * anchorRadius * 0.72;
+
+    const cols = Math.max(1, Math.ceil(Math.sqrt(nodes.length)));
+    const rows = Math.max(1, Math.ceil(nodes.length / cols));
+    nodes.forEach((node, idx) => {
+      const row = Math.floor(idx / cols);
+      const col = idx % cols;
+      const offsetX = (col - (cols - 1) / 2) * 196;
+      const offsetY = (row - (rows - 1) / 2) * 104;
+      node.x = anchorX + offsetX;
+      node.y = anchorY + offsetY;
+    });
+  });
+}
+
+function graphNodeCollisionRadius(node) {
+  const label = normalizeText(node?.label || node?.type || "", "");
+  const compact = label.replace(/\s+/g, " ").trim();
+  const extra = Math.min(84, Math.max(0, compact.length - 12) * 1.8);
+  return 98 + extra;
+}
+
+function spreadGraphNodes() {
+  const movable = graphState.nodes.filter((node) => Number.isFinite(node.x) && Number.isFinite(node.y));
+  if (movable.length <= 1) return;
+
+  const pairAngle = (idA, idB) => {
+    const seedInput = `${idA || ""}|${idB || ""}`;
+    let seed = 0;
+    for (let i = 0; i < seedInput.length; i += 1) {
+      seed = (seed * 131 + seedInput.charCodeAt(i)) % 1000003;
+    }
+    return ((seed % 6283) / 1000) % (Math.PI * 2);
+  };
+
+  const iterations = 14;
+  for (let iter = 0; iter < iterations; iter += 1) {
+    for (let i = 0; i < movable.length; i += 1) {
+      for (let j = i + 1; j < movable.length; j += 1) {
+        const a = movable[i];
+        const b = movable[j];
+        let dx = (Number(b.x) || 0) - (Number(a.x) || 0);
+        let dy = (Number(b.y) || 0) - (Number(a.y) || 0);
+        let dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < 0.0001) {
+          const angle = pairAngle(a.id, b.id);
+          dx = Math.cos(angle);
+          dy = Math.sin(angle);
+          dist = 1;
+        }
+        const minDist = graphNodeCollisionRadius(a) + graphNodeCollisionRadius(b);
+        if (dist >= minDist) continue;
+        const push = (minDist - dist) * 0.54;
+        const nx = dx / dist;
+        const ny = dy / dist;
+        a.x -= nx * push;
+        a.y -= ny * push;
+        b.x += nx * push;
+        b.y += ny * push;
+      }
+    }
+
+    // Keep clusters from drifting too far while resolving overlaps.
+    for (const node of movable) {
+      node.x *= 0.998;
+      node.y *= 0.998;
+    }
+  }
+
+  // Final deterministic pass for any lingering near-overlaps.
+  for (let i = 0; i < movable.length; i += 1) {
+    for (let j = i + 1; j < movable.length; j += 1) {
+      const a = movable[i];
+      const b = movable[j];
+      const dx = (Number(b.x) || 0) - (Number(a.x) || 0);
+      const dy = (Number(b.y) || 0) - (Number(a.y) || 0);
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const minDist = graphNodeCollisionRadius(a) + graphNodeCollisionRadius(b);
+      if (dist >= minDist) continue;
+      const angle = pairAngle(a.id, b.id);
+      const correction = minDist - dist + 8;
+      b.x += Math.cos(angle) * correction;
+      b.y += Math.sin(angle) * correction;
+    }
+  }
 }
 
 function setGraphInspectorEnabled(enabled) {
@@ -1087,6 +1308,10 @@ function renderGraph() {
   if (!graphNodesLayer || !graphEdgesLayer) return;
 
   ensureGraphLayout();
+  if (graphState.needsSpreadPass) {
+    spreadGraphNodes();
+    graphState.needsSpreadPass = false;
+  }
   graphNodesLayer.innerHTML = "";
   graphEdgesLayer.innerHTML = "";
 
@@ -1222,6 +1447,7 @@ async function loadGraphForSession(sessionId, { force = false } = {}) {
     graphState.edges = [];
     graphState.selectedNodeId = null;
     graphState.loadedSessionId = null;
+    graphState.needsSpreadPass = false;
     renderGraph();
     return;
   }
@@ -1235,15 +1461,17 @@ async function loadGraphForSession(sessionId, { force = false } = {}) {
   try {
     const payload = await fetchJson(`/api/graph/${encodeURIComponent(sessionId)}`);
     graphState.loadedSessionId = sessionId;
-    graphState.nodes = Array.isArray(payload.nodes) ? payload.nodes.map(normalizeGraphNode).filter(Boolean) : [];
-    graphState.edges = Array.isArray(payload.edges) ? payload.edges.map(normalizeGraphEdge).filter(Boolean) : [];
+    const incomingNodes = Array.isArray(payload.nodes) ? payload.nodes.map(normalizeGraphNode).filter(Boolean) : [];
+    const incomingEdges = Array.isArray(payload.edges) ? payload.edges.map(normalizeGraphEdge).filter(Boolean) : [];
+
+    graphState.nodes = incomingNodes;
+    graphState.edges = incomingEdges;
+    graphState.needsSpreadPass = true;
+    fitGraphViewportToNodes();
     if (graphState.selectedNodeId && !graphNodeById(graphState.selectedNodeId)) {
       graphState.selectedNodeId = null;
     }
-    setGraphStatus(
-      `${graphState.nodes.length} nodes · ${graphState.edges.length} edges`,
-      false
-    );
+    setGraphStatus(`${graphState.nodes.length} nodes · ${graphState.edges.length} edges`, false);
     renderGraph();
   } catch (error) {
     setGraphStatus(error.message || "Could not load graph.", true);
@@ -1257,22 +1485,11 @@ async function ensureGraphViewReady(force = false) {
     graphState.nodes = [];
     graphState.edges = [];
     graphState.selectedNodeId = null;
+    graphState.needsSpreadPass = false;
     renderGraph();
     return;
   }
   await loadGraphForSession(activeSessionId, { force });
-}
-
-let graphRefreshTimer = null;
-function scheduleGraphRefresh(delayMs = 260) {
-  if (!activeSessionId) return;
-  if (graphRefreshTimer) {
-    window.clearTimeout(graphRefreshTimer);
-  }
-  graphRefreshTimer = window.setTimeout(() => {
-    graphRefreshTimer = null;
-    loadGraphForSession(activeSessionId, { force: true });
-  }, delayMs);
 }
 
 let graphInteractionsBound = false;
@@ -1367,7 +1584,7 @@ function setupGraphInteractions() {
   );
 
   graphResetBtn?.addEventListener("click", () => {
-    resetGraphViewport();
+    fitGraphViewportToNodes();
     renderGraph();
   });
 
@@ -1446,13 +1663,63 @@ function applySessionPaneCollapsed(collapsed) {
 function scrollExecutionToBottom() {
   if (!executionFeed) return;
   executionFeed.scrollTop = executionFeed.scrollHeight;
+  persistExecutionHistory();
+}
+
+function persistExecutionHistory(sessionId = activeSessionId) {
+  if (!executionFeed) return;
+  const sid = normalizeText(sessionId, "");
+  if (!sid) return;
+  const html = executionFeed.innerHTML || "";
+  executionHistoryBySession.set(sid, html);
+  executionPersistPending = { sid, html };
+  if (executionPersistTimer) {
+    clearTimeout(executionPersistTimer);
+  }
+  executionPersistTimer = setTimeout(() => {
+    flushExecutionHistoryPersist().catch(() => {});
+  }, 250);
+}
+
+function restoreExecutionHistory(sessionId) {
+  if (!executionFeed) return false;
+  const sid = normalizeText(sessionId, "");
+  if (!sid) return false;
+  const html = executionHistoryBySession.get(sid);
+  if (typeof html !== "string" || !html.trim()) {
+    return false;
+  }
+  executionFeed.innerHTML = html;
+  return true;
+}
+
+async function flushExecutionHistoryPersist() {
+  if (executionPersistInFlight || !executionPersistPending) return;
+  const pending = executionPersistPending;
+  executionPersistPending = null;
+  executionPersistInFlight = true;
+  try {
+    await fetchJson(`/api/sessions/${encodeURIComponent(pending.sid)}/execution-html`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ html: pending.html }),
+    });
+  } catch (_error) {
+    // Keep UI responsive; persistence will retry on next write.
+  } finally {
+    executionPersistInFlight = false;
+    if (executionPersistPending) {
+      flushExecutionHistoryPersist().catch(() => {});
+    }
+  }
 }
 
 function createExecutionRunShell(promptText) {
   if (!executionFeed) {
     return { streamEvents: null };
   }
-  executionFeed.innerHTML = "";
+  const emptyNodes = executionFeed.querySelectorAll(".execution-empty");
+  emptyNodes.forEach((node) => node.remove());
 
   const runShell = document.createElement("section");
   runShell.className = "terminal-run";
@@ -1485,11 +1752,16 @@ function renderExecutionEmpty(message = "Run a prompt to stream terminal output.
   empty.className = "execution-empty";
   empty.textContent = message;
   executionFeed.appendChild(empty);
+  persistExecutionHistory();
 }
 
 function setActiveSession(session) {
   const sessionId = normalizeText(session?.id, "");
   const messages = normalizeMessages(session?.messages);
+  const previousSessionId = activeSessionId;
+  if (previousSessionId && previousSessionId !== sessionId) {
+    persistExecutionHistory(previousSessionId);
+  }
   activeSessionId = sessionId || null;
   activeSessionMessages = messages;
   writeStoredSessionId(activeSessionId);
@@ -1507,14 +1779,23 @@ function setActiveSession(session) {
     } else {
       sessionSummaries.unshift(nextSummary);
     }
+    const persistedExecutionHtml = typeof session?.execution_html === "string" ? session.execution_html : "";
+    if (persistedExecutionHtml.trim()) {
+      executionHistoryBySession.set(activeSessionId, persistedExecutionHtml);
+    }
   }
   renderSessionList();
-  renderExecutionEmpty("Run a prompt to stream terminal output.");
+  if (!restoreExecutionHistory(activeSessionId)) {
+    renderExecutionEmpty("Run a prompt to stream terminal output.");
+  } else {
+    scrollExecutionToBottom();
+  }
 
   graphState.loadedSessionId = null;
   graphState.nodes = [];
   graphState.edges = [];
   graphState.selectedNodeId = null;
+  graphState.needsSpreadPass = false;
   if (isGraphTabActive()) {
     ensureGraphViewReady(true).catch(() => {
       setGraphStatus("Could not load graph.", true);
@@ -1622,6 +1903,7 @@ function renderSessionList() {
 
       try {
         await fetchJson(`/api/sessions/${encodeURIComponent(summary.id)}`, { method: "DELETE" });
+        executionHistoryBySession.delete(summary.id);
         sessionSummaries = sessionSummaries.filter((item) => item.id !== summary.id);
 
         if (summary.id === activeSessionId) {
@@ -2096,6 +2378,12 @@ function handleStreamEvent(type, data, run) {
         run.commitAssistant?.(text);
       }
       break;
+    case "cancelled": {
+      const message = normalizeText(data.message, "Run stopped by user.");
+      appendStreamEvent(run, message, "note");
+      setStatus(promptStatus, message, false);
+      break;
+    }
     case "error": {
       const message = normalizeText(data.message, "Backend error while running prompt.");
       const code = normalizeText(data.code, "");
@@ -2103,6 +2391,11 @@ function handleStreamEvent(type, data, run) {
       if (code === "missing_provider_key" && provider === "anthropic") {
         anthropicConfigured = false;
         openAuthModal("Add your Anthropic key, then resend your prompt.");
+      } else if (code === "provider_auth_invalid" && provider === "anthropic") {
+        anthropicConfigured = false;
+        openAuthModal("Anthropic authentication failed. Update your API key and retry.");
+      } else if (code === "gateway_connectivity") {
+        openSettingsModal("Gateway connectivity issue detected. Check URL/auth and retry.");
       }
       setStatus(promptStatus, message, false);
       appendStreamEvent(run, `ERROR: ${message}`, "note");
@@ -2112,9 +2405,15 @@ function handleStreamEvent(type, data, run) {
       }
       break;
     }
+    case "graph_updated":
+      ensureGraphViewReady(true).catch(() => {});
+      break;
     case "done":
       if (data.ok === false) {
-        setStatus(promptStatus, data.message || "Run ended with errors.", false);
+        const doneMessage = activeRunStopRequested
+          ? "Run stopped by user."
+          : normalizeText(data.message, "Run ended with errors.");
+        setStatus(promptStatus, doneMessage, false);
       } else {
         setStatus(promptStatus, "Run complete.", true);
       }
@@ -2123,16 +2422,7 @@ function handleStreamEvent(type, data, run) {
       break;
   }
 
-  const eventSessionId = normalizeText(data.session_id, "");
-  const sessionMatches = !eventSessionId || (activeSessionId && eventSessionId === activeSessionId);
-  const shouldRefreshGraph = isGraphTabActive() || graphState.loadedSessionId === activeSessionId;
-  if (
-    sessionMatches &&
-    shouldRefreshGraph &&
-    ["tool_start", "tool_update", "tool_execution", "run_status", "final_result", "error", "done"].includes(type)
-  ) {
-    scheduleGraphRefresh(type === "tool_update" ? 420 : 220);
-  }
+  // Graph updates are pushed explicitly via graph_updated events.
 
   ensureJumpLatestButton();
   if (!autoScrollEnabled && jumpLatestBtn) {
@@ -2170,11 +2460,12 @@ function parseSseFrame(rawFrame) {
   return { type: eventName, payload: payload };
 }
 
-async function runPromptStream({ prompt, sessionId, run }) {
+async function runPromptStream({ prompt, sessionId, run, signal, onEvent }) {
   const response = await fetch("/api/prompt/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt, session_id: sessionId }),
+    signal,
   });
 
   if (!response.ok) {
@@ -2212,6 +2503,7 @@ async function runPromptStream({ prompt, sessionId, run }) {
       if (buffer.trim()) {
         const parsed = parseSseFrame(buffer.trim());
         if (parsed) {
+          onEvent?.(parsed);
           handleStreamEvent(parsed.type, parsed.payload, run);
           if (parsed.type === "done") {
             doneReceived = true;
@@ -2229,6 +2521,7 @@ async function runPromptStream({ prompt, sessionId, run }) {
       buffer = buffer.slice(idx + 2);
       const parsed = parseSseFrame(frame.trim());
       if (parsed) {
+        onEvent?.(parsed);
         handleStreamEvent(parsed.type, parsed.payload, run);
         if (parsed.type === "done") {
           doneReceived = true;
@@ -2327,12 +2620,13 @@ newSessionBtn?.addEventListener("click", async () => {
 
 promptForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (isRunning) {
+    await requestStopActiveRun();
+    return;
+  }
   const prompt = promptInput.value.trim();
   if (!prompt) {
     setStatus(promptStatus, "Prompt cannot be empty.", false);
-    return;
-  }
-  if (isRunning) {
     return;
   }
 
@@ -2373,11 +2667,26 @@ promptForm?.addEventListener("submit", async (event) => {
   promptInput.value = "";
   resizePromptInput();
 
+  activeRunAbortController = new AbortController();
+  activeRunStopRequested = false;
+  activeRunMeta = { sessionId: activeSessionId, runId: "" };
   setRunningState(true);
   setStatus(promptStatus, "Starting Cobra Lite run...", true);
 
   try {
-    const ok = await runPromptStream({ prompt, sessionId: activeSessionId, run });
+    const ok = await runPromptStream({
+      prompt,
+      sessionId: activeSessionId,
+      run,
+      signal: activeRunAbortController?.signal,
+      onEvent: (evt) => {
+        const payload = evt && typeof evt.payload === "object" ? evt.payload : {};
+        const runId = normalizeText(payload.run_id, "");
+        if (runId && activeRunMeta) {
+          activeRunMeta.runId = runId;
+        }
+      },
+    });
     if (ok) {
       setStatus(promptStatus, "Run complete.", true);
       if (!run.committedAssistant) {
@@ -2387,19 +2696,51 @@ promptForm?.addEventListener("submit", async (event) => {
       }
     }
   } catch (error) {
-    if (isMissingAnthropicKeyError(error)) {
+    if (error && error.name === "AbortError") {
+      const stopMessage = "Run stopped by user.";
+      setStatus(promptStatus, stopMessage, false);
+      appendStreamEvent(run, stopMessage, "note");
+      if (!run.committedAssistant) {
+        setAssistantBubble(run, stopMessage);
+        run.commitAssistant(stopMessage);
+      }
+    } else if (isMissingAnthropicKeyError(error)) {
       anthropicConfigured = false;
       openAuthModal("Add your Anthropic key, then resend your prompt.");
       setStatus(promptStatus, "Anthropic API key required.", false);
       appendStreamEvent(run, "Error: Anthropic API key required.", "note");
+      if (!run.committedAssistant) {
+        const message = "Error: Anthropic API key required.";
+        setAssistantBubble(run, message);
+        run.commitAssistant(message);
+      }
+    } else if (isAnthropicAuthInvalidError(error)) {
+      anthropicConfigured = false;
+      openAuthModal("Anthropic authentication failed. Update your API key and retry.");
+      setStatus(promptStatus, "Anthropic authentication failed.", false);
+      appendStreamEvent(run, "Error: Anthropic authentication failed.", "note");
+      if (!run.committedAssistant) {
+        const message = "Error: Anthropic authentication failed.";
+        setAssistantBubble(run, message);
+        run.commitAssistant(message);
+      }
+    } else if (isGatewayConnectivityError(error)) {
+      openSettingsModal("Gateway connectivity issue detected. Check URL/auth and retry.");
+      setStatus(promptStatus, error.message, false);
+      appendStreamEvent(run, `Error: ${error.message}`, "note");
+      if (!run.committedAssistant) {
+        const message = `Error: ${error.message}`;
+        setAssistantBubble(run, message);
+        run.commitAssistant(message);
+      }
     } else {
       setStatus(promptStatus, error.message, false);
       appendStreamEvent(run, `Error: ${error.message}`, "note");
-    }
-    if (!run.committedAssistant) {
-      const message = isMissingAnthropicKeyError(error) ? "Error: Anthropic API key required." : `Error: ${error.message}`;
-      setAssistantBubble(run, message);
-      run.commitAssistant(message);
+      if (!run.committedAssistant) {
+        const message = `Error: ${error.message}`;
+        setAssistantBubble(run, message);
+        run.commitAssistant(message);
+      }
     }
   } finally {
     try {
@@ -2448,12 +2789,7 @@ sessionFoldBtn?.addEventListener("click", () => {
 });
 
 settingsBtn?.addEventListener("click", () => {
-  settingsModal.classList.remove("hidden");
-  settingsStatus.textContent = "";
-  if (settingsKeyInput && !settingsKeyInput.value.trim()) {
-    settingsKeyInput.value = defaultGatewayUrl;
-  }
-  settingsKeyInput.focus();
+  openSettingsModal("");
 });
 
 closeSettingsBtn?.addEventListener("click", () => {
@@ -2516,5 +2852,18 @@ async function bootstrap() {
     promptInput?.focus();
   }
 }
+
+window.addEventListener("beforeunload", () => {
+  if (!executionFeed || !activeSessionId) return;
+  const html = executionFeed.innerHTML || "";
+  executionHistoryBySession.set(activeSessionId, html);
+  try {
+    const url = `/api/sessions/${encodeURIComponent(activeSessionId)}/execution-html`;
+    const payload = JSON.stringify({ html });
+    navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
+  } catch (_err) {
+    // Ignore unload persistence errors.
+  }
+});
 
 bootstrap();

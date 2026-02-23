@@ -20,6 +20,7 @@ from cobra_lite.config import (
     STATE_FILE,
 )
 from cobra_lite.services.gateway_client import (
+    RunCancelledError,
     effective_gateway_url,
     extract_missing_provider,
     send_to_openclaw,
@@ -59,6 +60,11 @@ def _enqueue_progress(event_queue: queue.Queue, payload: dict[str, Any]) -> None
 
 
 GRAPH_UPDATE_BLOCK_RE = re.compile(r"<graph_update>\s*(.*?)\s*</graph_update>", re.IGNORECASE | re.DOTALL)
+GRAPH_SUGGESTIONS_HEADER_RE = re.compile(r"^#{0,3}\s*graph suggestions\s*:?\s*$", re.IGNORECASE)
+ANTHROPIC_AUTH_INVALID_RE = re.compile(
+    r"(invalid|incorrect|unauthorized|forbidden).*(x-api-key|api key)|authentication[_\s-]?error",
+    re.IGNORECASE,
+)
 
 
 def _extract_graph_update_block(text: str) -> tuple[str, dict[str, Any] | None]:
@@ -80,6 +86,78 @@ def _extract_graph_update_block(text: str) -> tuple[str, dict[str, Any] | None]:
     return cleaned, parsed
 
 
+def _extract_graph_suggestions(text: str) -> tuple[str, list[dict[str, str]]]:
+    source = str(text or "")
+    lines = source.splitlines()
+    start_idx = -1
+    for idx, line in enumerate(lines):
+        if GRAPH_SUGGESTIONS_HEADER_RE.match(line.strip()):
+            start_idx = idx
+            break
+    if start_idx < 0:
+        return source.strip(), []
+
+    suggestions: list[dict[str, str]] = []
+    end_idx = len(lines)
+    for idx in range(start_idx + 1, len(lines)):
+        raw_line = lines[idx]
+        line = raw_line.strip()
+        if not line:
+            if suggestions:
+                end_idx = idx + 1
+                break
+            continue
+        if re.match(r"^#{1,6}\s+", line):
+            end_idx = idx
+            break
+        if re.match(r"^[A-Z][A-Za-z0-9 _/-]{1,40}:$", line):
+            end_idx = idx
+            break
+
+        content = re.sub(r"^[-*+]\s+", "", line)
+        content = re.sub(r"^\d+\.\s+", "", content).strip()
+        if not content:
+            continue
+
+        parsed: dict[str, str] | None = None
+        match = re.match(r"^\[(.+?)\]\s+(.+?)(?:\s*[—\-|:]\s+(.+))?$", content)
+        if match:
+            parsed = {
+                "type": str(match.group(1) or "Note").strip() or "Note",
+                "label": str(match.group(2) or "Suggested node").strip() or "Suggested node",
+                "why": str(match.group(3) or "").strip(),
+            }
+        else:
+            parts = [str(item).strip() for item in content.split("|")]
+            if len(parts) >= 2 and parts[0] and parts[1]:
+                parsed = {
+                    "type": parts[0],
+                    "label": parts[1],
+                    "why": " | ".join(part for part in parts[2:] if part),
+                }
+
+        if not parsed:
+            continue
+        if len(parsed["label"]) < 6:
+            continue
+        suggestions.append(parsed)
+        if len(suggestions) >= 8:
+            break
+
+    deduped: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in suggestions:
+        key = f"{item['type'].lower()}|{item['label'].lower()}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+
+    cleaned_lines = lines[:start_idx] + lines[end_idx:]
+    cleaned = "\n".join(cleaned_lines).strip()
+    return cleaned, deduped
+
+
 def create_app() -> Flask:
     app = Flask(
         __name__,
@@ -95,6 +173,47 @@ def create_app() -> Flask:
     workspace_dir_override = str(os.getenv("OPENCLAW_WORKSPACE_DIR") or "").strip()
     file_read_limit = 256_000
     list_limit = 1000
+    run_control_lock = threading.Lock()
+    run_cancel_events: dict[str, threading.Event] = {}
+    session_active_runs: dict[str, str] = {}
+
+    def _register_run_control(session_id: str, run_id: str) -> threading.Event:
+        event = threading.Event()
+        with run_control_lock:
+            run_cancel_events[run_id] = event
+            session_active_runs[session_id] = run_id
+        return event
+
+    def _cleanup_run_control(session_id: str, run_id: str) -> None:
+        with run_control_lock:
+            run_cancel_events.pop(run_id, None)
+            if session_active_runs.get(session_id) == run_id:
+                session_active_runs.pop(session_id, None)
+
+    def _cancel_run(session_id: str | None, run_id: str | None) -> tuple[bool, str]:
+        target_event: threading.Event | None = None
+        resolved_run_id = ""
+        resolved_session_id = str(session_id or "").strip()
+        requested_run_id = str(run_id or "").strip()
+
+        with run_control_lock:
+            if requested_run_id:
+                target_event = run_cancel_events.get(requested_run_id)
+                resolved_run_id = requested_run_id
+            elif resolved_session_id:
+                active_run_id = session_active_runs.get(resolved_session_id, "")
+                if active_run_id:
+                    target_event = run_cancel_events.get(active_run_id)
+                    resolved_run_id = active_run_id
+            else:
+                return False, "Missing session_id or run_id."
+
+        if not target_event:
+            return False, "No active run found to stop."
+        target_event.set()
+        if resolved_session_id:
+            return True, f"Stop requested for {resolved_run_id} in session {resolved_session_id}."
+        return True, f"Stop requested for {resolved_run_id}."
 
     def _resolve_workspace_root() -> Path:
         candidates: list[Path] = []
@@ -277,6 +396,121 @@ def create_app() -> Flask:
             "message": message,
         }
 
+    def _classify_runtime_error(message: str) -> dict[str, Any]:
+        raw = str(message or "").strip()
+        text = raw.lower()
+        missing_provider = extract_missing_provider(raw)
+        if missing_provider:
+            return _missing_provider_payload(missing_provider)
+        if ANTHROPIC_AUTH_INVALID_RE.search(raw):
+            return {
+                "ok": False,
+                "code": "provider_auth_invalid",
+                "provider": "anthropic",
+                "message": "Anthropic authentication failed. Update your API key in settings and retry.",
+            }
+        if "emitted no terminal actions" in text or "no terminal actions were emitted by the gateway run" in text:
+            return {
+                "ok": False,
+                "code": "terminal_telemetry_missing",
+                "message": (
+                    "Gateway run completed without terminal telemetry. "
+                    "Check gateway run configuration, provider auth, and tool permissions."
+                ),
+            }
+        if (
+            "websocket transport is unavailable" in text
+            or "gateway connect failed" in text
+            or "cannot reach gateway" in text
+            or "connection refused" in text
+            or "timed out" in text
+            or "name or service not known" in text
+        ):
+            return {
+                "ok": False,
+                "code": "gateway_connectivity",
+                "message": "Gateway connectivity issue detected. Verify gateway URL/auth and retry.",
+            }
+        return {
+            "ok": False,
+            "code": "runtime_error",
+            "message": raw or "Unknown runtime error.",
+        }
+
+    def _apply_graph_updates(
+        session_id: str,
+        graph_update_payload: dict[str, Any] | None,
+        graph_suggestions: list[dict[str, str]],
+    ) -> int:
+        existing = graph_store.get_graph(session_id)
+        existing_nodes = existing.get("nodes") if isinstance(existing, dict) else []
+        existing_keys = {
+            f"{str(node.get('type') or '').strip().lower()}|{str(node.get('label') or '').strip().lower()}"
+            for node in (existing_nodes if isinstance(existing_nodes, list) else [])
+            if isinstance(node, dict)
+        }
+
+        created = 0
+
+        if isinstance(graph_update_payload, dict):
+            raw_nodes = graph_update_payload.get("nodes")
+            if isinstance(raw_nodes, list):
+                for raw in raw_nodes:
+                    if not isinstance(raw, dict):
+                        continue
+                    node_type = str(raw.get("type") or "Note").strip() or "Note"
+                    label = str(raw.get("label") or "").strip()
+                    if len(label) < 6:
+                        continue
+                    key = f"{node_type.lower()}|{label.lower()}"
+                    if key in existing_keys:
+                        continue
+                    description = str(raw.get("description") or raw.get("why") or "").strip()
+                    status = str(raw.get("status") or "new").strip() or "new"
+                    severity = str(raw.get("severity") or "info").strip() or "info"
+                    confidence = raw.get("confidence")
+                    payload = {
+                        "type": node_type,
+                        "label": label,
+                        "description": description,
+                        "status": status,
+                        "severity": severity,
+                        "confidence": confidence,
+                        "data": {"manual": True, "agent_auto": True},
+                    }
+                    try:
+                        graph_store.create_node(session_id, payload, created_by="agent")
+                        existing_keys.add(key)
+                        created += 1
+                    except Exception:
+                        continue
+
+        for item in graph_suggestions:
+            node_type = str(item.get("type") or "Note").strip() or "Note"
+            label = str(item.get("label") or "").strip()
+            if len(label) < 6:
+                continue
+            key = f"{node_type.lower()}|{label.lower()}"
+            if key in existing_keys:
+                continue
+            payload = {
+                "type": node_type,
+                "label": label,
+                "description": str(item.get("why") or "").strip(),
+                "status": "new",
+                "severity": "info",
+                "confidence": 0.6,
+                "data": {"manual": True, "agent_auto": True},
+            }
+            try:
+                graph_store.create_node(session_id, payload, created_by="agent")
+                existing_keys.add(key)
+                created += 1
+            except Exception:
+                continue
+
+        return created
+
     def _resolve_session_id(payload: dict[str, Any]) -> str:
         requested = str(payload.get("session_id") or "").strip()
         if requested and session_store.get_session(requested):
@@ -336,6 +570,18 @@ def create_app() -> Flask:
             return jsonify({"ok": False, "message": "Session not found."}), 404
         graph_store.delete_session(session_id)
         return jsonify({"ok": True, "message": "Session deleted."})
+
+    @app.patch("/api/sessions/<session_id>/execution-html")
+    @app.post("/api/sessions/<session_id>/execution-html")
+    def patch_session_execution_html(session_id: str):
+        payload = request.get_json(silent=True) or {}
+        html = payload.get("html")
+        if not isinstance(html, str):
+            return jsonify({"ok": False, "message": "Invalid payload: 'html' must be a string."}), 400
+        session = session_store.update_execution_html(session_id, html)
+        if not session:
+            return jsonify({"ok": False, "message": "Session not found."}), 404
+        return jsonify({"ok": True, "session_id": session_id, "updated_at": session.get("updated_at")})
 
     @app.get("/api/graph/<session_id>")
     def get_graph(session_id: str):
@@ -420,6 +666,15 @@ def create_app() -> Flask:
         state_store.set_provider_key("anthropic", api_key)
         return jsonify({"ok": True, "message": "Anthropic key saved."})
 
+    @app.post("/api/prompt/stop")
+    def stop_prompt_run():
+        payload = request.get_json(silent=True) or {}
+        session_id = str(payload.get("session_id") or "").strip()
+        run_id = str(payload.get("run_id") or "").strip()
+        ok, message = _cancel_run(session_id if session_id else None, run_id if run_id else None)
+        status_code = 200 if ok else 404
+        return jsonify({"ok": ok, "message": message, "session_id": session_id or None, "run_id": run_id or None}), status_code
+
     @app.post("/api/prompt")
     def submit_prompt():
         payload = request.get_json(silent=True) or {}
@@ -437,7 +692,7 @@ def create_app() -> Flask:
             return jsonify({**missing_payload, "session_id": session_id}), 400
 
         run_id = f"run-{uuid.uuid4().hex[:12]}"
-        graph_store.start_run(session_id, run_id, prompt)
+        cancel_event = _register_run_control(session_id, run_id)
         graph_context = graph_store.build_context(session_id)
 
         try:
@@ -447,14 +702,14 @@ def create_app() -> Flask:
                 session_id=session_id,
                 anthropic_api_key=anthropic_api_key,
                 graph_context=graph_context,
+                cancel_event=cancel_event,
             )
             final_text_raw = str(result.get("final_observation") or "Task completed.").strip()
-            final_text, graph_update = _extract_graph_update_block(final_text_raw)
-            if graph_update:
-                graph_store.apply_agent_update(session_id, run_id, graph_update)
+            text_without_block, graph_update = _extract_graph_update_block(final_text_raw)
+            final_text, graph_suggestions = _extract_graph_suggestions(text_without_block)
+            created_graph_nodes = _apply_graph_updates(session_id, graph_update, graph_suggestions)
             result["final_observation"] = final_text
             session_store.append_message(session_id, "assistant", final_text)
-            graph_store.finalize_run(session_id, run_id, final_text, ok=True)
             return jsonify(
                 {
                     "ok": True,
@@ -462,21 +717,20 @@ def create_app() -> Flask:
                     "session_id": session_id,
                     "run_id": run_id,
                     "result": result,
+                    "graph_nodes_created": created_graph_nodes,
                 }
             )
+        except RunCancelledError:
+            message = "Run stopped by user."
+            session_store.append_message(session_id, "assistant", message)
+            return jsonify({"ok": False, "session_id": session_id, "run_id": run_id, "message": message}), 499
         except Exception as e:
-            error_message = str(e)
-            missing_provider = extract_missing_provider(error_message)
-            if missing_provider:
-                missing_payload = _missing_provider_payload(missing_provider)
-                session_store.append_message(session_id, "assistant", f"Error: {missing_payload['message']}")
-                graph_store.ingest_event(session_id, run_id, "error", {"message": missing_payload["message"]})
-                graph_store.finalize_run(session_id, run_id, f"Error: {missing_payload['message']}", ok=False)
-                return jsonify({**missing_payload, "session_id": session_id}), 400
-            session_store.append_message(session_id, "assistant", f"Error: {error_message}")
-            graph_store.ingest_event(session_id, run_id, "error", {"message": error_message})
-            graph_store.finalize_run(session_id, run_id, f"Error: {error_message}", ok=False)
-            return jsonify({"ok": False, "session_id": session_id, "message": error_message}), 500
+            classified = _classify_runtime_error(str(e))
+            session_store.append_message(session_id, "assistant", f"Error: {classified['message']}")
+            status_code = 400 if classified.get("code") in {"missing_provider_key", "provider_auth_invalid"} else 500
+            return jsonify({**classified, "session_id": session_id}), status_code
+        finally:
+            _cleanup_run_control(session_id, run_id)
 
     @app.post("/api/prompt/stream")
     def submit_prompt_stream():
@@ -495,7 +749,7 @@ def create_app() -> Flask:
             return jsonify({**missing_payload, "session_id": session_id}), 400
 
         run_id = f"run-{uuid.uuid4().hex[:12]}"
-        graph_store.start_run(session_id, run_id, prompt)
+        cancel_event = _register_run_control(session_id, run_id)
         graph_context = graph_store.build_context(session_id)
 
         events: queue.Queue = queue.Queue()
@@ -505,11 +759,6 @@ def create_app() -> Flask:
             event_type = str(payload.get("type") or "message").strip() or "message"
             data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
             tagged_data = {**data, "session_id": session_id, "run_id": run_id}
-            try:
-                graph_store.ingest_event(session_id, run_id, event_type, tagged_data)
-            except Exception:
-                # Keep streaming resilient if graph ingestion fails.
-                pass
             _enqueue_progress(events, {"type": event_type, "data": tagged_data})
 
         def execute() -> None:
@@ -521,46 +770,43 @@ def create_app() -> Flask:
                     anthropic_api_key=anthropic_api_key,
                     graph_context=graph_context,
                     progress_callback=emit,
+                    cancel_event=cancel_event,
                 )
                 final_text_raw = str(result.get("final_observation") or "Task completed.").strip()
-                final_text, graph_update = _extract_graph_update_block(final_text_raw)
-                if graph_update:
-                    graph_store.apply_agent_update(session_id, run_id, graph_update)
+                text_without_block, graph_update = _extract_graph_update_block(final_text_raw)
+                final_text, graph_suggestions = _extract_graph_suggestions(text_without_block)
+                created_graph_nodes = _apply_graph_updates(session_id, graph_update, graph_suggestions)
                 result["final_observation"] = final_text
                 session_store.append_message(session_id, "assistant", final_text)
-                graph_store.finalize_run(session_id, run_id, final_text, ok=True)
+                if created_graph_nodes > 0:
+                    emit({"type": "graph_updated", "data": {"created_nodes": created_graph_nodes}})
+                emit({"type": "final_result", "data": {"result": result, "session_id": session_id, "run_id": run_id}})
+                emit({"type": "done", "data": {"ok": True, "session_id": session_id, "run_id": run_id}})
+                events.put(None)
+            except RunCancelledError:
+                message = "Run stopped by user."
+                emit({"type": "cancelled", "data": {"message": message, "session_id": session_id, "run_id": run_id}})
+                emit({"type": "done", "data": {"ok": False, "message": message, "session_id": session_id, "run_id": run_id}})
+                events.put(None)
             except Exception as exc:
-                message = str(exc)
-                missing_provider = extract_missing_provider(message)
-                if missing_provider:
-                    missing_payload = _missing_provider_payload(missing_provider)
-                    session_store.append_message(session_id, "assistant", f"Error: {missing_payload['message']}")
-                    graph_store.ingest_event(session_id, run_id, "error", {"message": missing_payload["message"]})
-                    graph_store.finalize_run(session_id, run_id, f"Error: {missing_payload['message']}", ok=False)
-                    emit(
-                        {
-                            "type": "error",
-                            "data": {
-                                "message": missing_payload["message"],
-                                "code": missing_payload["code"],
-                                "provider": missing_provider,
-                                "session_id": session_id,
-                                "run_id": run_id,
-                            },
-                        }
-                    )
-                else:
-                    session_store.append_message(session_id, "assistant", f"Error: {message}")
-                    graph_store.ingest_event(session_id, run_id, "error", {"message": message})
-                    graph_store.finalize_run(session_id, run_id, f"Error: {message}", ok=False)
-                    emit({"type": "error", "data": {"message": message, "session_id": session_id, "run_id": run_id}})
+                classified = _classify_runtime_error(str(exc))
+                session_store.append_message(session_id, "assistant", f"Error: {classified['message']}")
+                emit(
+                    {
+                        "type": "error",
+                        "data": {
+                            "message": classified["message"],
+                            "code": classified.get("code", "runtime_error"),
+                            "provider": classified.get("provider", ""),
+                            "session_id": session_id,
+                            "run_id": run_id,
+                        },
+                    }
+                )
                 emit({"type": "done", "data": {"ok": False, "session_id": session_id, "run_id": run_id}})
                 events.put(None)
-                return
-
-            emit({"type": "final_result", "data": {"result": result, "session_id": session_id, "run_id": run_id}})
-            emit({"type": "done", "data": {"ok": True, "session_id": session_id, "run_id": run_id}})
-            events.put(None)
+            finally:
+                _cleanup_run_control(session_id, run_id)
 
         thread = threading.Thread(target=execute, daemon=True)
         thread.start()

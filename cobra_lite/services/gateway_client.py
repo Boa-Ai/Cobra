@@ -39,6 +39,11 @@ ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 FALLBACK_EXEC_LINE_RE = re.compile(r"^\s*(?:[⚠️❌✅]?\s*)?(?:🛠️\s*)?Exec:", re.IGNORECASE)
 AUTH_STORE_VERSION = 1
 COBRA_ANTHROPIC_PROFILE_ID = "anthropic:cobra-lite"
+AUTO_CONTINUE_MAX_ATTEMPTS = max(1, int(os.getenv("COBRA_AUTO_CONTINUE_MAX_ATTEMPTS", "4")))
+
+
+class RunCancelledError(Exception):
+    pass
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -267,6 +272,7 @@ def send_to_openclaw(
     anthropic_api_key: str | None = None,
     graph_context: str | None = None,
     progress_callback: Optional[Any] = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """
     Send a security testing prompt to the gateway agent.
@@ -279,6 +285,10 @@ def send_to_openclaw(
 
     class _PolicyViolationError(Exception):
         pass
+
+    def _raise_if_cancelled() -> None:
+        if cancel_event and cancel_event.is_set():
+            raise RunCancelledError("Run stopped by user.")
 
     def _tool_disallowed_for_mode(tool_name: str) -> bool:
         if COBRA_EXECUTION_MODE not in {"cli_only", "cli", "terminal_only"}:
@@ -302,12 +312,15 @@ def send_to_openclaw(
         graph_prompt_suffix = (
             "\n\nMission graph memory (shared context across runs):\n"
             f"{graph_memory}\n\n"
-            "If you want to create/update memory nodes, append a final machine block exactly as:\n"
-            "<graph_update>{\"nodes\": [...], \"edges\": [...]}</graph_update>\n"
-            "Keep the JSON compact and valid. Keep user-facing narrative outside this block."
+            "Graph policy: only capture high-level, long-lived mission understanding (not individual shell commands). "
+            "When meaningful long-term understanding changes, append an optional hidden block at the end:\n"
+            "<graph_update>{\"nodes\":[{\"type\":\"Finding\",\"label\":\"Clear high-level title\",\"description\":\"Why this matters\",\"status\":\"new\",\"severity\":\"info\",\"confidence\":0.7}]}</graph_update>\n"
+            "Do not mention this block in prose. If nothing meaningful changed, omit the block."
         )
+    _base_system_prefix = f"{SECURITY_CONTEXT}{graph_prompt_suffix}\n\n"
 
-    full_prompt = f"{SECURITY_CONTEXT}{graph_prompt_suffix}\n\n{prompt}{enforcement_suffix}"
+    def _build_prompt(user_text: str) -> str:
+        return f"{_base_system_prefix}{user_text}{enforcement_suffix}"
 
     configured_key = (anthropic_api_key or "").strip()
     if configured_key:
@@ -422,6 +435,21 @@ def send_to_openclaw(
         command = re.sub(r"^\s*(?:[⚠️❌✅]?\s*)?(?:🛠️\s*)?Exec:\s*", "", str(line or ""), flags=re.IGNORECASE).strip()
         return command or "(no command)"
 
+    def _needs_auto_continue(final_text: str) -> bool:
+        text = str(final_text or "").strip().lower()
+        if not text:
+            return False
+        trigger_patterns = [
+            r"max(?:imum)?\s+(?:number\s+of\s+)?(?:actions|steps)\b",
+            r"\baction\s+limit\b",
+            r"\bstep\s+limit\b",
+            r"\btoken\s+limit\b",
+            r"\bcontext\s+length\b",
+            r"\breached\s+.*\blimit\b",
+            r"\bunable\s+to\s+complete\b.{0,80}\b(limit|budget|max)\b",
+        ]
+        return any(re.search(pattern, text, re.IGNORECASE) for pattern in trigger_patterns)
+
     def _emit_cli_actions_from_logs(log_text: str, parent_execution_id: str, *, start_index: int = 2) -> int:
         if not progress_callback:
             return 0
@@ -483,7 +511,7 @@ def send_to_openclaw(
 
         return len(actions)
 
-    def _send_via_gateway_ws() -> dict[str, Any]:
+    def _send_via_gateway_ws(prompt_text: str) -> dict[str, Any]:
         import websockets
 
         async def _run() -> dict[str, Any]:
@@ -536,11 +564,16 @@ def send_to_openclaw(
                 max_size=8_000_000,
                 open_timeout=REQUEST_TIMEOUT_SECONDS,
             ) as ws:
+                recv_deadline = time.time() + OPENCLAW_AGENT_TIMEOUT_SECONDS + 30
                 while True:
-                    raw = await asyncio.wait_for(
-                        ws.recv(),
-                        timeout=OPENCLAW_AGENT_TIMEOUT_SECONDS + 30,
-                    )
+                    _raise_if_cancelled()
+                    remaining = recv_deadline - time.time()
+                    if remaining <= 0:
+                        raise TimeoutError("Gateway websocket receive timed out.")
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=min(1.0, max(0.1, remaining)))
+                    except asyncio.TimeoutError:
+                        continue
                     msg = json.loads(raw)
                     frame_type = str(msg.get("type") or "").strip()
 
@@ -742,7 +775,7 @@ def send_to_openclaw(
 
                     if response_id == patch_request_id and not agent_sent:
                         agent_params: dict[str, Any] = {
-                            "message": full_prompt,
+                            "message": prompt_text,
                             "sessionId": active_session_id,
                             "sessionKey": active_session_id,
                             "idempotencyKey": str(uuid.uuid4()),
@@ -783,7 +816,7 @@ def send_to_openclaw(
 
         return asyncio.run(_run())
 
-    def _send_via_cli() -> dict[str, Any]:
+    def _send_via_cli(prompt_text: str) -> dict[str, Any]:
         execution_id = "gateway-agent-cli"
         verbose_switch = "off" if OPENCLAW_VERBOSE_LEVEL.strip().lower() in {"off", "none", "0", "false"} else "on"
         command = [
@@ -792,7 +825,7 @@ def send_to_openclaw(
             "--session-id",
             active_session_id,
             "--message",
-            full_prompt,
+            prompt_text,
             "--json",
             "--verbose",
             verbose_switch,
@@ -912,6 +945,7 @@ def send_to_openclaw(
 
         try:
             while closed_streams < active_streams:
+                _raise_if_cancelled()
                 try:
                     source, raw_line = line_queue.get(timeout=0.2)
                 except queue.Empty:
@@ -1148,10 +1182,10 @@ def send_to_openclaw(
 
         return {"final_observation": _extract_final_observation(parsed)}
 
-    def _send_via_http() -> dict[str, Any]:
+    def _send_via_http(prompt_text: str) -> dict[str, Any]:
         endpoint = f"{gateway_url.rstrip('/')}/api/chat"
         payload = {
-            "message": full_prompt,
+            "message": prompt_text,
             "stream": True,
             "sessionKey": active_session_id,
         }
@@ -1167,6 +1201,7 @@ def send_to_openclaw(
             result_text = ""
 
             for line in response:
+                _raise_if_cancelled()
                 line_str = line.decode("utf-8").strip()
                 if not line_str:
                     continue
@@ -1221,56 +1256,106 @@ def send_to_openclaw(
                 "final_observation": result_text or "Task completed.",
             }
 
-    errors: list[str] = []
-    ws_failure_message = ""
+    def _send_once(prompt_text: str) -> dict[str, Any]:
+        _raise_if_cancelled()
+        errors: list[str] = []
+        ws_failure_message = ""
 
-    try:
-        return _send_via_gateway_ws()
-    except Exception as ws_error:
-        if isinstance(ws_error, _PolicyViolationError):
-            raise
-        ws_failure_message = str(ws_error)
-        errors.append(f"ws: {ws_failure_message}")
+        try:
+            return _send_via_gateway_ws(prompt_text)
+        except Exception as ws_error:
+            if isinstance(ws_error, (_PolicyViolationError, RunCancelledError)):
+                raise
+            ws_failure_message = str(ws_error)
+            errors.append(f"ws: {ws_failure_message}")
 
-        missing_provider = extract_missing_provider(ws_failure_message)
-        if missing_provider == "anthropic" and configured_key:
-            try:
-                _sync_anthropic_auth_profile(configured_key)
-            except Exception:
-                pass
-            try:
-                return _send_via_gateway_ws()
-            except Exception as ws_retry_error:
-                if isinstance(ws_retry_error, _PolicyViolationError):
-                    raise
-                ws_failure_message = str(ws_retry_error)
-                errors.append(f"ws-retry: {ws_failure_message}")
+            missing_provider = extract_missing_provider(ws_failure_message)
+            if missing_provider == "anthropic" and configured_key:
+                try:
+                    _sync_anthropic_auth_profile(configured_key)
+                except Exception:
+                    pass
+                try:
+                    return _send_via_gateway_ws(prompt_text)
+                except Exception as ws_retry_error:
+                    if isinstance(ws_retry_error, (_PolicyViolationError, RunCancelledError)):
+                        raise
+                    ws_failure_message = str(ws_retry_error)
+                    errors.append(f"ws-retry: {ws_failure_message}")
 
-    if COBRA_REQUIRE_LIVE_TELEMETRY and not COBRA_ALLOW_NONSTREAM_FALLBACK:
-        reason = ws_failure_message or "unknown websocket transport failure"
-        raise Exception(
-            "Live gateway telemetry is required, but WebSocket transport is unavailable. "
-            f"{reason}. Configure gateway auth/connectivity and retry."
+        if COBRA_REQUIRE_LIVE_TELEMETRY and not COBRA_ALLOW_NONSTREAM_FALLBACK:
+            reason = (ws_failure_message or "").strip()
+            reason_lc = reason.lower()
+            if "no terminal actions were emitted by the gateway run" in reason_lc:
+                raise Exception(
+                    "Live gateway telemetry is required, but the gateway run emitted no terminal actions. "
+                    "Verify gateway run configuration, provider auth, and tool permissions, then retry."
+                )
+            if reason:
+                raise Exception(
+                    "Live gateway telemetry is required, but WebSocket transport is unavailable. "
+                    f"{reason}. Configure gateway auth/connectivity and retry."
+                )
+            raise Exception(
+                "Live gateway telemetry is required, but WebSocket transport is unavailable. "
+                "Unknown websocket transport failure. Configure gateway auth/connectivity and retry."
+            )
+
+        try:
+            return _send_via_http(prompt_text)
+        except Exception as http_error:
+            if isinstance(http_error, (_PolicyViolationError, RunCancelledError)):
+                raise
+            message = str(http_error)
+            errors.append(f"http: {message}")
+            if "HTTP Error 405" in message or "Method Not Allowed" in message:
+                try:
+                    return _send_via_cli(prompt_text)
+                except Exception as cli_error:
+                    if isinstance(cli_error, RunCancelledError):
+                        raise
+                    errors.append(f"cli: {str(cli_error)}")
+
+        try:
+            return _send_via_cli(prompt_text)
+        except Exception as cli_error:
+            if isinstance(cli_error, RunCancelledError):
+                raise
+            errors.append(f"cli: {str(cli_error)}")
+            raise Exception(f"Gateway error: {' | '.join(errors)}")
+
+    base_user_prompt = str(prompt or "").strip()
+    followup_prompt = base_user_prompt
+    attempt_index = 0
+    while True:
+        _raise_if_cancelled()
+        attempt_index += 1
+        result = _send_once(_build_prompt(followup_prompt))
+        final_observation = str(result.get("final_observation") or "").strip()
+        should_retry = _needs_auto_continue(final_observation) and attempt_index < AUTO_CONTINUE_MAX_ATTEMPTS
+        if not should_retry:
+            return result
+
+        if progress_callback:
+            progress_callback(
+                {
+                    "type": "reasoning",
+                    "data": {
+                        "text": (
+                            "Run hit an execution-action limit before task completion; "
+                            f"auto-continuing ({attempt_index + 1}/{AUTO_CONTINUE_MAX_ATTEMPTS})."
+                        )
+                    },
+                }
+            )
+
+        carry_forward = final_observation[:1600]
+        followup_prompt = (
+            "Continue the same unresolved user request in this session and finish only when the objective is complete.\n"
+            "Do not repeat already completed steps; continue from remaining gaps.\n\n"
+            f"Original request:\n{base_user_prompt}\n\n"
+            f"Last run final note:\n{carry_forward}"
         )
-
-    try:
-        return _send_via_http()
-    except Exception as http_error:
-        if isinstance(http_error, _PolicyViolationError):
-            raise
-        message = str(http_error)
-        errors.append(f"http: {message}")
-        if "HTTP Error 405" in message or "Method Not Allowed" in message:
-            try:
-                return _send_via_cli()
-            except Exception as cli_error:
-                errors.append(f"cli: {str(cli_error)}")
-
-    try:
-        return _send_via_cli()
-    except Exception as cli_error:
-        errors.append(f"cli: {str(cli_error)}")
-        raise Exception(f"Gateway error: {' | '.join(errors)}")
 
 
 def effective_gateway_url(saved_gateway_url: str | None) -> str:

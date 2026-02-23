@@ -6,7 +6,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_NODE_TYPE = "Note"
 DEFAULT_STATUS = "new"
 DEFAULT_SEVERITY = "info"
@@ -203,16 +202,84 @@ class GraphStore:
             "updated_at": float(updated_at),
         }
 
+    def _is_curated_node(self, node: dict[str, Any]) -> bool:
+        if not isinstance(node, dict):
+            return False
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        if data.get("manual") is True:
+            return True
+        node_id = str(node.get("id") or "").strip().lower()
+        created_by = str(node.get("created_by") or "").strip().lower()
+        if created_by == "user" and node_id.startswith("node:"):
+            return True
+        if created_by == "agent" and data.get("agent_suggested") is True:
+            return True
+        return False
+
+    def _curated_graph_view(self, graph: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+        all_nodes = list(graph.get("nodes", []))
+        curated_nodes = [node for node in all_nodes if self._is_curated_node(node)]
+        keep_ids = {str(node.get("id") or "") for node in curated_nodes}
+        curated_edges = [
+            edge
+            for edge in graph.get("edges", [])
+            if str(edge.get("from") or "") in keep_ids and str(edge.get("to") or "") in keep_ids
+        ]
+        hidden_nodes = max(0, len(all_nodes) - len(curated_nodes))
+        return curated_nodes, curated_edges, hidden_nodes
+
     def _next_position(self, graph: dict[str, Any], node_type: str) -> tuple[float, float]:
+        def _position_is_clear(x_pos: float, y_pos: float, min_distance: float = 220.0) -> bool:
+            min_distance_sq = min_distance * min_distance
+            for existing in graph.get("nodes", []):
+                ex = existing.get("x")
+                ey = existing.get("y")
+                if not isinstance(ex, (int, float)) or not isinstance(ey, (int, float)):
+                    continue
+                if not math.isfinite(ex) or not math.isfinite(ey):
+                    continue
+                dx = float(ex) - x_pos
+                dy = float(ey) - y_pos
+                if (dx * dx + dy * dy) < min_distance_sq:
+                    return False
+            return True
+
         if node_type == "Run":
             run_count = sum(1 for node in graph.get("nodes", []) if str(node.get("type")) == "Run")
-            return float(run_count * 110), float(-run_count * 36)
+            base_x = float(run_count * 170)
+            base_y = float(-run_count * 52)
+            if _position_is_clear(base_x, base_y, min_distance=240.0):
+                return base_x, base_y
+            for step in range(1, 40):
+                angle = (step * 0.57) + (run_count * 0.11)
+                radius = 120 + (step * 28)
+                x_try = base_x + math.cos(angle) * radius
+                y_try = base_y + math.sin(angle) * radius * 0.72
+                if _position_is_clear(float(x_try), float(y_try), min_distance=240.0):
+                    return float(x_try), float(y_try)
+            return base_x, base_y
 
         type_index = TYPE_RING_ORDER.index(node_type) if node_type in TYPE_RING_ORDER else len(TYPE_RING_ORDER)
         type_count = sum(1 for node in graph.get("nodes", []) if str(node.get("type")) == node_type)
-        angle = (type_count * 0.92) + (type_index * 0.43)
-        radius = 160 + (type_index * 58)
-        return float(math.cos(angle) * radius), float(math.sin(angle) * radius)
+
+        lanes = max(1, min(12, type_count // 8 + 1))
+        lane_index = type_count % lanes
+        orbit_step = type_count // lanes
+        angle = (orbit_step * 0.72) + (type_index * 0.51) + (lane_index * 0.2)
+        radius = 230 + (type_index * 82) + (lane_index * 96)
+        x = math.cos(angle) * radius
+        y = math.sin(angle) * radius * 0.78
+        if _position_is_clear(float(x), float(y)):
+            return float(x), float(y)
+
+        for step in range(1, 50):
+            alt_angle = angle + (step * 0.62)
+            alt_radius = radius + (step * 42)
+            x_try = math.cos(alt_angle) * alt_radius
+            y_try = math.sin(alt_angle) * alt_radius * 0.78
+            if _position_is_clear(float(x_try), float(y_try)):
+                return float(x_try), float(y_try)
+        return float(x), float(y)
 
     def _find_node_index(self, graph: dict[str, Any], node_id: str) -> int:
         for index, node in enumerate(graph.get("nodes", [])):
@@ -233,11 +300,14 @@ class GraphStore:
         with self._lock:
             state = self._load()
             graph = self._ensure_session_graph(state, session_id)
+            curated_nodes, curated_edges, hidden_nodes = self._curated_graph_view(graph)
             self._save(state)
             return {
                 "session_id": session_id,
-                "nodes": list(graph.get("nodes", [])),
-                "edges": list(graph.get("edges", [])),
+                "nodes": curated_nodes,
+                "edges": curated_edges,
+                "manual_only": True,
+                "nodes_hidden": hidden_nodes,
                 "updated_at": float(graph.get("updated_at") or time.time()),
             }
 
@@ -281,6 +351,9 @@ class GraphStore:
     def create_node(self, session_id: str, payload: dict[str, Any], created_by: str = "user") -> dict[str, Any]:
         raw = payload if isinstance(payload, dict) else {}
         node_id = str(raw.get("id") or "").strip() or f"node:{uuid.uuid4().hex[:12]}"
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+        if "manual" not in data:
+            data = {**data, "manual": True}
         node = {
             "id": node_id,
             "type": str(raw.get("type") or DEFAULT_NODE_TYPE).strip() or DEFAULT_NODE_TYPE,
@@ -292,7 +365,7 @@ class GraphStore:
             "created_by": str(created_by or "user").strip() or "user",
             "source": raw.get("source") if isinstance(raw.get("source"), dict) else {},
             "refs": raw.get("refs") if isinstance(raw.get("refs"), list) else [],
-            "data": raw.get("data") if isinstance(raw.get("data"), dict) else {},
+            "data": data,
             "x": raw.get("x"),
             "y": raw.get("y"),
         }
@@ -362,413 +435,29 @@ class GraphStore:
             self._save(state)
             return graph["edges"][self._find_edge_index(graph, normalized["id"])]
 
-    def _ensure_root_nodes(self, graph: dict[str, Any], session_id: str) -> str:
-        mission_id = "mission:root"
-        if self._find_node_index(graph, mission_id) >= 0:
-            return mission_id
-        x, y = 0.0, 0.0
-        node = {
-            "id": mission_id,
-            "type": "Objective",
-            "label": "Session Mission",
-            "description": f"Primary mission model for session {session_id}.",
-            "status": "active",
-            "confidence": 0.6,
-            "severity": "info",
-            "created_by": "system",
-            "source": {},
-            "refs": [],
-            "data": {"session_id": session_id},
-            "x": x,
-            "y": y,
-            "created_at": float(time.time()),
-            "updated_at": float(time.time()),
-        }
-        graph["nodes"].append(node)
-        return mission_id
-
+    # Legacy compatibility hooks kept intentionally minimal.
     def start_run(self, session_id: str, run_id: str, prompt: str) -> dict[str, str]:
-        run_node_id = f"run:{run_id}"
-        prompt_node_id = f"objective:{run_id}"
-
-        with self._lock:
-            state = self._load()
-            graph = self._ensure_session_graph(state, session_id)
-            mission_id = self._ensure_root_nodes(graph, session_id)
-
-            if self._find_node_index(graph, run_node_id) < 0:
-                x, y = self._next_position(graph, "Run")
-                graph["nodes"].append(
-                    {
-                        "id": run_node_id,
-                        "type": "Run",
-                        "label": f"Run {run_id[:8]}",
-                        "description": "Active execution run.",
-                        "status": "running",
-                        "confidence": 0.7,
-                        "severity": "info",
-                        "created_by": "system",
-                        "source": {"run_id": run_id},
-                        "refs": [],
-                        "data": {"run_id": run_id},
-                        "x": x,
-                        "y": y,
-                        "created_at": float(time.time()),
-                        "updated_at": float(time.time()),
-                    }
-                )
-
-            if self._find_node_index(graph, prompt_node_id) < 0:
-                x, y = self._next_position(graph, "Objective")
-                graph["nodes"].append(
-                    {
-                        "id": prompt_node_id,
-                        "type": "Objective",
-                        "label": self._trim_text(prompt.splitlines()[0] if prompt else "Objective", max_len=160),
-                        "description": self._trim_text(prompt, max_len=900),
-                        "status": "in_progress",
-                        "confidence": 0.5,
-                        "severity": "info",
-                        "created_by": "user",
-                        "source": {"run_id": run_id},
-                        "refs": [],
-                        "data": {"prompt": self._trim_text(prompt, max_len=900)},
-                        "x": x,
-                        "y": y,
-                        "created_at": float(time.time()),
-                        "updated_at": float(time.time()),
-                    }
-                )
-
-            edge_payloads = [
-                {"from": mission_id, "to": run_node_id, "type": "tracks", "created_by": "system"},
-                {"from": run_node_id, "to": prompt_node_id, "type": "targets", "created_by": "system"},
-            ]
-            for payload in edge_payloads:
-                edge = self._normalize_edge(payload)
-                if not edge:
-                    continue
-                if self._find_edge_index(graph, edge["id"]) < 0:
-                    edge["created_at"] = float(time.time())
-                    edge["updated_at"] = float(time.time())
-                    graph["edges"].append(edge)
-
-            self._touch_graph(graph)
-            self._save(state)
-            return {"run_node_id": run_node_id, "prompt_node_id": prompt_node_id, "mission_node_id": mission_id}
-
-    def _upsert_runtime_node(self, graph: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
-        normalized = self._normalize_node(node)
-        if not normalized:
-            return node
-        idx = self._find_node_index(graph, normalized["id"])
-        now = float(time.time())
-        if idx >= 0:
-            existing = graph["nodes"][idx]
-            merged = {**existing, **normalized}
-            merged["updated_at"] = now
-            normalized = self._normalize_node(merged) or existing
-            graph["nodes"][idx] = normalized
-        else:
-            if normalized.get("x") is None or normalized.get("y") is None:
-                x, y = self._next_position(graph, str(normalized.get("type") or DEFAULT_NODE_TYPE))
-                normalized["x"] = x if normalized.get("x") is None else normalized.get("x")
-                normalized["y"] = y if normalized.get("y") is None else normalized.get("y")
-            normalized["created_at"] = now
-            normalized["updated_at"] = now
-            graph["nodes"].append(normalized)
-        return normalized
-
-    def _upsert_runtime_edge(self, graph: dict[str, Any], edge_payload: dict[str, Any]) -> None:
-        edge = self._normalize_edge(edge_payload)
-        if not edge:
-            return
-        idx = self._find_edge_index(graph, edge["id"])
-        now = float(time.time())
-        if idx >= 0:
-            existing = graph["edges"][idx]
-            merged = {**existing, **edge}
-            merged["updated_at"] = now
-            graph["edges"][idx] = self._normalize_edge(merged) or existing
-        else:
-            edge["created_at"] = now
-            edge["updated_at"] = now
-            graph["edges"].append(edge)
+        return {
+            "run_node_id": f"run:{run_id}",
+            "prompt_node_id": f"objective:{run_id}",
+            "mission_node_id": "mission:root",
+        }
 
     def ingest_event(self, session_id: str, run_id: str, event_type: str, data: dict[str, Any]) -> None:
-        if not session_id or not run_id:
-            return
-        event_name = str(event_type or "").strip().lower()
-        payload = data if isinstance(data, dict) else {}
-        now = float(time.time())
-
-        with self._lock:
-            state = self._load()
-            graph = self._ensure_session_graph(state, session_id)
-            self._ensure_root_nodes(graph, session_id)
-            run_node_id = f"run:{run_id}"
-
-            if self._find_node_index(graph, run_node_id) < 0:
-                self._upsert_runtime_node(
-                    graph,
-                    {
-                        "id": run_node_id,
-                        "type": "Run",
-                        "label": f"Run {run_id[:8]}",
-                        "description": "Execution run.",
-                        "status": "running",
-                        "confidence": 0.7,
-                        "severity": "info",
-                        "created_by": "system",
-                        "source": {"run_id": run_id},
-                        "refs": [],
-                        "data": {"run_id": run_id},
-                    },
-                )
-
-            if event_name == "run_status":
-                phase = str(payload.get("phase") or "").strip().lower()
-                status = "running"
-                if phase in {"end", "completed", "complete"}:
-                    status = "completed"
-                elif phase in {"error", "failed"}:
-                    status = "failed"
-                self._upsert_runtime_node(
-                    graph,
-                    {
-                        "id": run_node_id,
-                        "type": "Run",
-                        "label": f"Run {run_id[:8]}",
-                        "status": status,
-                        "severity": "high" if status == "failed" else "info",
-                        "created_by": "system",
-                        "source": {"run_id": run_id},
-                        "data": {"run_id": run_id, "phase": phase or status},
-                        "updated_at": now,
-                    },
-                )
-
-            elif event_name in {"tool_start", "tool_update", "tool_execution"}:
-                execution_id = str(payload.get("execution_id") or "").strip()
-                step_index = payload.get("action_index_1based") or payload.get("step_index_1based") or "?"
-                action_key = execution_id or f"step-{step_index}"
-                action_node_id = f"action:{run_id}:{action_key}"
-                tool_name = str(payload.get("tool_name") or "tool").strip() or "tool"
-                command = self._trim_text(payload.get("command") or tool_name, max_len=280) or tool_name
-                output = self._trim_text(payload.get("tool_output") or "", max_len=1500)
-                rationale = self._trim_text(payload.get("rationale") or "", max_len=500)
-
-                status = "running"
-                if event_name == "tool_execution":
-                    status = "failed" if bool(payload.get("is_error")) else "completed"
-
-                action_data = {
-                    "run_id": run_id,
-                    "execution_id": execution_id,
-                    "tool_name": tool_name,
-                    "command": command,
-                    "last_output": output,
-                    "rationale": rationale,
-                    "step_index_1based": step_index,
-                    "event_type": event_name,
-                }
-                self._upsert_runtime_node(
-                    graph,
-                    {
-                        "id": action_node_id,
-                        "type": "Action",
-                        "label": command,
-                        "description": rationale or f"{tool_name} execution",
-                        "status": status,
-                        "confidence": 0.8 if status == "completed" else 0.6,
-                        "severity": "high" if status == "failed" else "info",
-                        "created_by": "agent",
-                        "source": {"run_id": run_id, "execution_id": execution_id, "event_type": event_name},
-                        "refs": [
-                            {
-                                "kind": "event",
-                                "event_type": event_name,
-                                "execution_id": execution_id,
-                                "step_index_1based": step_index,
-                            }
-                        ],
-                        "data": action_data,
-                    },
-                )
-                self._upsert_runtime_edge(
-                    graph,
-                    {
-                        "from": run_node_id,
-                        "to": action_node_id,
-                        "type": "tests",
-                        "created_by": "system",
-                    },
-                )
-
-                if event_name == "tool_execution":
-                    evidence_node_id = f"evidence:{run_id}:{action_key}"
-                    evidence_desc = output or "(no output)"
-                    self._upsert_runtime_node(
-                        graph,
-                        {
-                            "id": evidence_node_id,
-                            "type": "Evidence",
-                            "label": f"{tool_name} output",
-                            "description": evidence_desc,
-                            "status": "captured",
-                            "confidence": 0.9,
-                            "severity": "high" if bool(payload.get("is_error")) else "info",
-                            "created_by": "agent",
-                            "source": {"run_id": run_id, "execution_id": execution_id, "event_type": event_name},
-                            "refs": [
-                                {
-                                    "kind": "event",
-                                    "event_type": event_name,
-                                    "execution_id": execution_id,
-                                    "step_index_1based": step_index,
-                                }
-                            ],
-                            "data": {
-                                "run_id": run_id,
-                                "execution_id": execution_id,
-                                "tool_name": tool_name,
-                                "command": command,
-                                "output": evidence_desc,
-                            },
-                        },
-                    )
-                    self._upsert_runtime_edge(
-                        graph,
-                        {
-                            "from": action_node_id,
-                            "to": evidence_node_id,
-                            "type": "produced",
-                            "created_by": "system",
-                        },
-                    )
-
-            elif event_name == "reasoning":
-                text = self._trim_text(payload.get("text") or "", max_len=800)
-                if text:
-                    reasoning_node_id = f"reasoning:{run_id}"
-                    self._upsert_runtime_node(
-                        graph,
-                        {
-                            "id": reasoning_node_id,
-                            "type": "Agent",
-                            "label": "Agent notes",
-                            "description": text,
-                            "status": "active",
-                            "confidence": 0.4,
-                            "severity": "info",
-                            "created_by": "agent",
-                            "source": {"run_id": run_id, "event_type": "reasoning"},
-                            "refs": [{"kind": "event", "event_type": "reasoning"}],
-                            "data": {"run_id": run_id, "latest_note": text},
-                        },
-                    )
-                    self._upsert_runtime_edge(
-                        graph,
-                        {
-                            "from": run_node_id,
-                            "to": reasoning_node_id,
-                            "type": "derived_from",
-                            "created_by": "system",
-                        },
-                    )
-
-            elif event_name == "error":
-                text = self._trim_text(payload.get("message") or "Run error.", max_len=900)
-                node_id = f"finding:error:{run_id}"
-                self._upsert_runtime_node(
-                    graph,
-                    {
-                        "id": node_id,
-                        "type": "Finding",
-                        "label": "Run error",
-                        "description": text,
-                        "status": "open",
-                        "confidence": 0.95,
-                        "severity": "high",
-                        "created_by": "system",
-                        "source": {"run_id": run_id, "event_type": "error"},
-                        "refs": [{"kind": "event", "event_type": "error"}],
-                        "data": {"run_id": run_id, "message": text},
-                    },
-                )
-                self._upsert_runtime_edge(
-                    graph,
-                    {
-                        "from": run_node_id,
-                        "to": node_id,
-                        "type": "produced",
-                        "created_by": "system",
-                    },
-                )
-
-            self._touch_graph(graph)
-            self._save(state)
+        return
 
     def finalize_run(self, session_id: str, run_id: str, final_text: str, ok: bool = True) -> None:
-        run_node_id = f"run:{run_id}"
-        summary_node_id = f"summary:{run_id}"
-        clean_text = self._trim_text(final_text, max_len=2400)
-        with self._lock:
-            state = self._load()
-            graph = self._ensure_session_graph(state, session_id)
-            self._upsert_runtime_node(
-                graph,
-                {
-                    "id": run_node_id,
-                    "type": "Run",
-                    "label": f"Run {run_id[:8]}",
-                    "description": "Execution run.",
-                    "status": "completed" if ok else "failed",
-                    "confidence": 0.8 if ok else 0.95,
-                    "severity": "info" if ok else "high",
-                    "created_by": "system",
-                    "source": {"run_id": run_id},
-                    "data": {"run_id": run_id, "finalized": True},
-                },
-            )
-            self._upsert_runtime_node(
-                graph,
-                {
-                    "id": summary_node_id,
-                    "type": "Recommendation",
-                    "label": "Run summary",
-                    "description": clean_text or "(no summary)",
-                    "status": "final",
-                    "confidence": 0.7 if ok else 0.5,
-                    "severity": "info" if ok else "high",
-                    "created_by": "agent",
-                    "source": {"run_id": run_id, "event_type": "final_result"},
-                    "refs": [{"kind": "summary", "run_id": run_id}],
-                    "data": {"run_id": run_id},
-                },
-            )
-            self._upsert_runtime_edge(
-                graph,
-                {
-                    "from": run_node_id,
-                    "to": summary_node_id,
-                    "type": "derived_from",
-                    "created_by": "system",
-                },
-            )
-            self._touch_graph(graph)
-            self._save(state)
+        return
 
     def build_context(self, session_id: str, max_nodes: int = 36) -> str:
         with self._lock:
             state = self._load()
             graph = self._ensure_session_graph(state, session_id)
-            nodes = list(graph.get("nodes", []))
-            edges = list(graph.get("edges", []))
+            nodes, edges, _hidden_nodes = self._curated_graph_view(graph)
             self._save(state)
 
         if not nodes:
-            return "No mission graph context is available yet."
+            return "No manually curated mission graph context is available yet."
 
         type_counts: dict[str, int] = {}
         for node in nodes:
@@ -805,70 +494,4 @@ class GraphStore:
         return "\n".join(lines)
 
     def apply_agent_update(self, session_id: str, run_id: str, update_payload: dict[str, Any]) -> dict[str, int]:
-        payload = update_payload if isinstance(update_payload, dict) else {}
-        nodes_payload = payload.get("nodes")
-        edges_payload = payload.get("edges")
-        created_nodes = 0
-        created_edges = 0
-
-        with self._lock:
-            state = self._load()
-            graph = self._ensure_session_graph(state, session_id)
-
-            if isinstance(nodes_payload, list):
-                for raw in nodes_payload:
-                    if not isinstance(raw, dict):
-                        continue
-                    node_id = str(raw.get("id") or "").strip() or f"agent:{run_id}:{uuid.uuid4().hex[:10]}"
-                    node = {
-                        "id": node_id,
-                        "type": str(raw.get("type") or DEFAULT_NODE_TYPE).strip() or DEFAULT_NODE_TYPE,
-                        "label": self._trim_text(raw.get("label") or "Agent node", max_len=200),
-                        "description": self._trim_text(raw.get("description") or "", max_len=1200),
-                        "status": str(raw.get("status") or DEFAULT_STATUS).strip() or DEFAULT_STATUS,
-                        "confidence": self._coerce_confidence(raw.get("confidence")),
-                        "severity": str(raw.get("severity") or DEFAULT_SEVERITY).strip() or DEFAULT_SEVERITY,
-                        "created_by": "agent",
-                        "source": {"run_id": run_id, "event_type": "agent_update"},
-                        "refs": raw.get("refs") if isinstance(raw.get("refs"), list) else [],
-                        "data": raw.get("data") if isinstance(raw.get("data"), dict) else {},
-                        "x": raw.get("x"),
-                        "y": raw.get("y"),
-                    }
-                    normalized = self._normalize_node(node)
-                    if not normalized:
-                        continue
-                    existing_idx = self._find_node_index(graph, normalized["id"])
-                    if existing_idx < 0:
-                        created_nodes += 1
-                    self._upsert_runtime_node(graph, normalized)
-
-            if isinstance(edges_payload, list):
-                for raw in edges_payload:
-                    if not isinstance(raw, dict):
-                        continue
-                    from_id = str(raw.get("from") or "").strip()
-                    to_id = str(raw.get("to") or "").strip()
-                    if not from_id or not to_id:
-                        continue
-                    edge = {
-                        "id": str(raw.get("id") or "").strip()
-                        or f"edge:{from_id}:{str(raw.get('type') or 'related').strip() or 'related'}:{to_id}",
-                        "from": from_id,
-                        "to": to_id,
-                        "type": str(raw.get("type") or "related").strip() or "related",
-                        "label": self._trim_text(raw.get("label") or "", max_len=180),
-                        "created_by": "agent",
-                        "data": raw.get("data") if isinstance(raw.get("data"), dict) else {},
-                    }
-                    normalized = self._normalize_edge(edge)
-                    if not normalized:
-                        continue
-                    existing_idx = self._find_edge_index(graph, normalized["id"])
-                    if existing_idx < 0:
-                        created_edges += 1
-                    self._upsert_runtime_edge(graph, normalized)
-
-            self._touch_graph(graph)
-            self._save(state)
-            return {"nodes": created_nodes, "edges": created_edges}
+        return {"created_nodes": 0, "created_edges": 0}
