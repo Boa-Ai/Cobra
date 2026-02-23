@@ -60,7 +60,7 @@
 
         <div class="chat-column">
           <section id="key-gate" class="panel token-panel {% if has_gateway %}hidden{% endif %}">
-            <h2>Connect to Gateway</h2>
+            <h2>Step 1 of 2 · Connect to Gateway</h2>
             <p class="panel-sub">
               Enter your gateway URL. The default is <code>{{ default_gateway_url }}</code> for local instances.
               <span class="help-wrap">
@@ -286,10 +286,11 @@
     >
       <div class="modal-card">
         <div class="modal-head">
-          <h3 id="auth-title">Add Anthropic API Key</h3>
+          <h3 id="auth-title">Step 2 of 2 · Add Anthropic API Key</h3>
         </div>
         <p id="auth-description" class="panel-sub">
           Cobra Lite needs an Anthropic API key to run prompts with your local OpenClaw agent.
+          <a href="https://www.merge.dev/blog/anthropic-api-key" target="_blank" rel="noopener noreferrer">Guide</a>
         </p>
         <form id="auth-form" class="stack-form" autocomplete="off">
           <label for="auth-key-input" class="sr-only">Anthropic API key</label>

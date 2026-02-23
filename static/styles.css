@@ -1157,6 +1157,17 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
+#auth-description a {
+  color: var(--accent);
+  text-decoration-color: rgba(122, 213, 71, 0.7);
+}
+
+#auth-description a:hover,
+#auth-description a:focus-visible {
+  color: var(--text);
+  text-decoration-color: var(--accent);
+}
+
 .help-wrap {
   position: relative;
   display: inline-flex;
