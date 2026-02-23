@@ -265,6 +265,7 @@ def send_to_openclaw(
     gateway_url: str,
     session_id: str | None = None,
     anthropic_api_key: str | None = None,
+    graph_context: str | None = None,
     progress_callback: Optional[Any] = None,
 ) -> dict[str, Any]:
     """
@@ -295,7 +296,18 @@ def send_to_openclaw(
             "- Execute at least one terminal command for this request before finalizing.\n"
             "- Never claim a command was run unless it appears in tool output."
         )
-    full_prompt = f"{SECURITY_CONTEXT}\n\n{prompt}{enforcement_suffix}"
+    graph_memory = str(graph_context or "").strip()
+    graph_prompt_suffix = ""
+    if graph_memory:
+        graph_prompt_suffix = (
+            "\n\nMission graph memory (shared context across runs):\n"
+            f"{graph_memory}\n\n"
+            "If you want to create/update memory nodes, append a final machine block exactly as:\n"
+            "<graph_update>{\"nodes\": [...], \"edges\": [...]}</graph_update>\n"
+            "Keep the JSON compact and valid. Keep user-facing narrative outside this block."
+        )
+
+    full_prompt = f"{SECURITY_CONTEXT}{graph_prompt_suffix}\n\n{prompt}{enforcement_suffix}"
 
     configured_key = (anthropic_api_key or "").strip()
     if configured_key:

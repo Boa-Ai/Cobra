@@ -96,10 +96,12 @@ COBRA_AUTO_INSTALL_TOOLS=1
      ```
 
 3. **View Execution Details**
-   - Expand "Execution details" to see:
+   - Use the Execution pane tabs:
      - Tools being executed
      - Command outputs
      - Real-time progress
+     - Mission graph memory (nodes + links + evidence)
+     - Workspace files
    - Chat history is preserved across sessions
 
 4. **Settings**
@@ -125,6 +127,15 @@ Cobra Lite can:
 - Coordinate different phases (recon → scanning → exploitation)
 - Aggregate results from multiple tools
 - Maintain conversation context across complex workflows
+
+### Mission Graph Memory
+
+Cobra Lite now maintains a per-session graph as shared mission memory:
+- **Graph tab**: interactive graph canvas (pan/zoom/drag) plus node inspector
+- **Unified context**: terminal events stream into graph nodes/edges in real time
+- **Persistent memory**: graph state is stored in `.claw_graph.json`
+- **Agent memory loop**: graph context is injected into agent prompts, and optional
+  `<graph_update>{...}</graph_update>` blocks in final responses are applied to graph state
 
 ## Architecture
 

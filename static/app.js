@@ -32,6 +32,22 @@ const filesPreviewContent = document.getElementById("files-preview-content");
 const filesView = executionFilesView?.querySelector(".files-view") || null;
 const filesSelector = executionFilesView?.querySelector(".files-selector") || null;
 const filesResizer = document.getElementById("files-resizer");
+const graphCanvas = document.getElementById("graph-canvas");
+const graphEdgesLayer = document.getElementById("graph-edges-layer");
+const graphNodesLayer = document.getElementById("graph-nodes-layer");
+const graphStatus = document.getElementById("graph-status");
+const graphResetBtn = document.getElementById("graph-reset-btn");
+const graphRefreshBtn = document.getElementById("graph-refresh-btn");
+const graphAddNoteBtn = document.getElementById("graph-add-note-btn");
+const graphNodeId = document.getElementById("graph-node-id");
+const graphNodeLabelInput = document.getElementById("graph-node-label");
+const graphNodeTypeInput = document.getElementById("graph-node-type");
+const graphNodeStatusInput = document.getElementById("graph-node-status");
+const graphNodeSeverityInput = document.getElementById("graph-node-severity");
+const graphNodeConfidenceInput = document.getElementById("graph-node-confidence");
+const graphNodeDescriptionInput = document.getElementById("graph-node-description");
+const graphNodeSaveBtn = document.getElementById("graph-node-save-btn");
+const graphNodeLinks = document.getElementById("graph-node-links");
 
 const keyForm = document.getElementById("key-form");
 const keyInput = document.getElementById("api-key-input");
@@ -76,6 +92,17 @@ const fileViewerState = {
   currentPath: "",
   parentPath: null,
   selectedFilePath: "",
+};
+const graphState = {
+  loadedSessionId: null,
+  loading: false,
+  nodes: [],
+  edges: [],
+  selectedNodeId: null,
+  viewport: { x: 0, y: 0, scale: 1 },
+  pan: null,
+  draggingNodeId: null,
+  dragStart: null,
 };
 
 function decodeEscapedSequences(text) {
@@ -664,6 +691,14 @@ function showExecutionTab(tab) {
     });
     ensureFilesViewReady();
   }
+
+  if (showGraph) {
+    ensureGraphViewReady();
+  }
+}
+
+function isGraphTabActive() {
+  return executionTabGraph?.classList.contains("active") === true;
 }
 
 function formatFileSize(sizeBytes) {
@@ -876,6 +911,508 @@ async function ensureFilesViewReady() {
   }
 }
 
+function setGraphStatus(message, bad = false) {
+  if (!graphStatus) return;
+  graphStatus.textContent = message || "";
+  graphStatus.classList.toggle("bad", !!bad);
+}
+
+function graphTypeClass(nodeType) {
+  return `type-${String(nodeType || "note").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+}
+
+function normalizeGraphNode(rawNode) {
+  if (!rawNode || typeof rawNode !== "object") return null;
+  const id = normalizeText(rawNode.id, "");
+  if (!id) return null;
+  const xRaw = Number(rawNode.x);
+  const yRaw = Number(rawNode.y);
+  return {
+    id,
+    type: normalizeText(rawNode.type, "Note") || "Note",
+    label: normalizeText(rawNode.label, "Untitled node") || "Untitled node",
+    description: normalizeText(rawNode.description, ""),
+    status: normalizeText(rawNode.status, "new") || "new",
+    severity: normalizeText(rawNode.severity, "info") || "info",
+    confidence:
+      rawNode.confidence === null || rawNode.confidence === undefined || rawNode.confidence === ""
+        ? null
+        : Number.isFinite(Number(rawNode.confidence))
+          ? Math.max(0, Math.min(1, Number(rawNode.confidence)))
+          : null,
+    source: rawNode.source && typeof rawNode.source === "object" ? rawNode.source : {},
+    refs: Array.isArray(rawNode.refs) ? rawNode.refs.filter((item) => item && typeof item === "object") : [],
+    data: rawNode.data && typeof rawNode.data === "object" ? rawNode.data : {},
+    x: Number.isFinite(xRaw) ? xRaw : null,
+    y: Number.isFinite(yRaw) ? yRaw : null,
+    updated_at: Number(rawNode.updated_at) || 0,
+  };
+}
+
+function normalizeGraphEdge(rawEdge) {
+  if (!rawEdge || typeof rawEdge !== "object") return null;
+  const id = normalizeText(rawEdge.id, "");
+  const from = normalizeText(rawEdge.from, "");
+  const to = normalizeText(rawEdge.to, "");
+  if (!id || !from || !to) return null;
+  return {
+    id,
+    from,
+    to,
+    type: normalizeText(rawEdge.type, "related") || "related",
+    label: normalizeText(rawEdge.label, ""),
+  };
+}
+
+function graphNodeById(nodeId) {
+  if (!nodeId) return null;
+  return graphState.nodes.find((node) => node.id === nodeId) || null;
+}
+
+function resetGraphViewport() {
+  graphState.viewport = { x: 0, y: 0, scale: 1 };
+}
+
+function graphCenterOffset() {
+  if (!graphCanvas) {
+    return { cx: 0, cy: 0 };
+  }
+  return { cx: graphCanvas.clientWidth / 2, cy: graphCanvas.clientHeight / 2 };
+}
+
+function worldToScreen(node) {
+  const { cx, cy } = graphCenterOffset();
+  const scale = graphState.viewport.scale;
+  return {
+    x: cx + graphState.viewport.x + (Number(node.x) || 0) * scale,
+    y: cy + graphState.viewport.y + (Number(node.y) || 0) * scale,
+  };
+}
+
+function screenToWorld(clientX, clientY) {
+  if (!graphCanvas) return { x: 0, y: 0 };
+  const rect = graphCanvas.getBoundingClientRect();
+  const localX = clientX - rect.left;
+  const localY = clientY - rect.top;
+  const { cx, cy } = graphCenterOffset();
+  const scale = graphState.viewport.scale;
+  return {
+    x: (localX - cx - graphState.viewport.x) / scale,
+    y: (localY - cy - graphState.viewport.y) / scale,
+  };
+}
+
+function ensureGraphLayout() {
+  const typeSeen = new Map();
+  const ringOrder = [
+    "Objective",
+    "Scope",
+    "Asset",
+    "Surface",
+    "Hypothesis",
+    "Action",
+    "Evidence",
+    "Finding",
+    "Risk",
+    "Recommendation",
+    "Artifact",
+    "Agent",
+    "Note",
+    "Run",
+  ];
+
+  graphState.nodes.forEach((node) => {
+    if (Number.isFinite(node.x) && Number.isFinite(node.y)) {
+      return;
+    }
+    const type = node.type || "Note";
+    const typeIndex = Math.max(0, ringOrder.indexOf(type));
+    const seen = typeSeen.get(type) || 0;
+    typeSeen.set(type, seen + 1);
+    const angle = seen * 0.9 + typeIndex * 0.46;
+    const radius = 130 + typeIndex * 52;
+    node.x = Math.cos(angle) * radius;
+    node.y = Math.sin(angle) * radius;
+  });
+}
+
+function setGraphInspectorEnabled(enabled) {
+  const disabled = !enabled;
+  if (graphNodeLabelInput) graphNodeLabelInput.disabled = disabled;
+  if (graphNodeTypeInput) graphNodeTypeInput.disabled = disabled;
+  if (graphNodeStatusInput) graphNodeStatusInput.disabled = disabled;
+  if (graphNodeSeverityInput) graphNodeSeverityInput.disabled = disabled;
+  if (graphNodeConfidenceInput) graphNodeConfidenceInput.disabled = disabled;
+  if (graphNodeDescriptionInput) graphNodeDescriptionInput.disabled = disabled;
+  if (graphNodeSaveBtn) graphNodeSaveBtn.disabled = disabled;
+}
+
+function renderGraphInspector() {
+  const node = graphNodeById(graphState.selectedNodeId);
+  if (!node) {
+    if (graphNodeId) graphNodeId.textContent = "None selected";
+    if (graphNodeLabelInput) graphNodeLabelInput.value = "";
+    if (graphNodeTypeInput) graphNodeTypeInput.value = "";
+    if (graphNodeStatusInput) graphNodeStatusInput.value = "";
+    if (graphNodeSeverityInput) graphNodeSeverityInput.value = "";
+    if (graphNodeConfidenceInput) graphNodeConfidenceInput.value = "";
+    if (graphNodeDescriptionInput) graphNodeDescriptionInput.value = "";
+    if (graphNodeLinks) graphNodeLinks.textContent = "Select a node to inspect and edit details.";
+    setGraphInspectorEnabled(false);
+    return;
+  }
+
+  if (graphNodeId) graphNodeId.textContent = node.id;
+  if (graphNodeLabelInput) graphNodeLabelInput.value = node.label || "";
+  if (graphNodeTypeInput) graphNodeTypeInput.value = node.type || "";
+  if (graphNodeStatusInput) graphNodeStatusInput.value = node.status || "";
+  if (graphNodeSeverityInput) graphNodeSeverityInput.value = node.severity || "";
+  if (graphNodeConfidenceInput) graphNodeConfidenceInput.value = node.confidence === null ? "" : String(node.confidence);
+  if (graphNodeDescriptionInput) graphNodeDescriptionInput.value = node.description || "";
+
+  const refs = Array.isArray(node.refs) ? node.refs : [];
+  const sourceRun = normalizeText(node.source?.run_id, "");
+  const sourceExecution = normalizeText(node.source?.execution_id, "");
+  const bits = [];
+  if (sourceRun) bits.push(`run ${sourceRun}`);
+  if (sourceExecution) bits.push(`execution ${sourceExecution}`);
+  if (refs.length > 0) bits.push(`${refs.length} refs`);
+  if (graphNodeLinks) {
+    graphNodeLinks.textContent = bits.length ? bits.join(" · ") : "No linked refs.";
+  }
+  setGraphInspectorEnabled(true);
+}
+
+function renderGraph() {
+  if (!graphNodesLayer || !graphEdgesLayer) return;
+
+  ensureGraphLayout();
+  graphNodesLayer.innerHTML = "";
+  graphEdgesLayer.innerHTML = "";
+
+  if (!graphState.nodes.length) {
+    const empty = document.createElement("div");
+    empty.className = "graph-empty";
+    empty.textContent = "Graph is empty for this session";
+    graphNodesLayer.appendChild(empty);
+    renderGraphInspector();
+    return;
+  }
+
+  const nodeScreenMap = new Map();
+  for (const node of graphState.nodes) {
+    const screen = worldToScreen(node);
+    nodeScreenMap.set(node.id, screen);
+
+    const nodeBtn = document.createElement("button");
+    nodeBtn.type = "button";
+    nodeBtn.className = `graph-node ${graphTypeClass(node.type)}`;
+    if (node.id === graphState.selectedNodeId) {
+      nodeBtn.classList.add("active");
+    }
+    nodeBtn.dataset.nodeId = node.id;
+    nodeBtn.style.left = `${screen.x}px`;
+    nodeBtn.style.top = `${screen.y}px`;
+
+    const title = document.createElement("div");
+    title.className = "graph-node-title";
+    title.textContent = node.label || node.type || node.id;
+    nodeBtn.appendChild(title);
+
+    const meta = document.createElement("div");
+    meta.className = "graph-node-meta";
+    const confidence = node.confidence === null ? "n/a" : Number(node.confidence).toFixed(2);
+    meta.textContent = `${node.type} · ${node.status} · ${confidence}`;
+    nodeBtn.appendChild(meta);
+
+    nodeBtn.addEventListener("click", () => {
+      graphState.selectedNodeId = node.id;
+      renderGraph();
+    });
+
+    nodeBtn.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      graphState.selectedNodeId = node.id;
+      graphState.draggingNodeId = node.id;
+      graphState.dragStart = { x: Number(node.x) || 0, y: Number(node.y) || 0, moved: false };
+      graphState.pan = null;
+      nodeBtn.classList.add("dragging");
+      renderGraphInspector();
+    });
+
+    graphNodesLayer.appendChild(nodeBtn);
+  }
+
+  if (graphCanvas) {
+    graphEdgesLayer.setAttribute("width", String(graphCanvas.clientWidth));
+    graphEdgesLayer.setAttribute("height", String(graphCanvas.clientHeight));
+  }
+
+  for (const edge of graphState.edges) {
+    const from = nodeScreenMap.get(edge.from);
+    const to = nodeScreenMap.get(edge.to);
+    if (!from || !to) continue;
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", String(from.x));
+    line.setAttribute("y1", String(from.y));
+    line.setAttribute("x2", String(to.x));
+    line.setAttribute("y2", String(to.y));
+    line.classList.add("graph-edge");
+    if (graphState.selectedNodeId && (edge.from === graphState.selectedNodeId || edge.to === graphState.selectedNodeId)) {
+      line.classList.add("selected");
+    }
+    graphEdgesLayer.appendChild(line);
+  }
+
+  renderGraphInspector();
+}
+
+function updateGraphLocalNode(nodeId, patch) {
+  const node = graphNodeById(nodeId);
+  if (!node) return;
+  Object.assign(node, patch || {});
+}
+
+async function patchGraphNode(nodeId, patch) {
+  if (!activeSessionId || !nodeId) return;
+  const payload = patch && typeof patch === "object" ? patch : {};
+  const response = await fetchJson(`/api/graph/${encodeURIComponent(activeSessionId)}/nodes/${encodeURIComponent(nodeId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const normalized = normalizeGraphNode(response.node);
+  if (!normalized) return;
+  const idx = graphState.nodes.findIndex((item) => item.id === normalized.id);
+  if (idx >= 0) {
+    graphState.nodes[idx] = normalized;
+  } else {
+    graphState.nodes.push(normalized);
+  }
+  renderGraph();
+}
+
+async function createGraphNoteNode() {
+  if (!activeSessionId) return;
+  const response = await fetchJson(`/api/graph/${encodeURIComponent(activeSessionId)}/nodes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "Note",
+      label: "New note",
+      description: "Describe why this node matters to the mission.",
+      status: "new",
+      severity: "info",
+      confidence: 0.3,
+    }),
+  });
+  const normalized = normalizeGraphNode(response.node);
+  if (!normalized) return;
+  graphState.nodes.push(normalized);
+  graphState.selectedNodeId = normalized.id;
+  setGraphStatus("Created note node.", false);
+  renderGraph();
+}
+
+async function loadGraphForSession(sessionId, { force = false } = {}) {
+  if (!sessionId) {
+    graphState.nodes = [];
+    graphState.edges = [];
+    graphState.selectedNodeId = null;
+    graphState.loadedSessionId = null;
+    renderGraph();
+    return;
+  }
+  if (!force && graphState.loadedSessionId === sessionId && graphState.nodes.length > 0) {
+    renderGraph();
+    return;
+  }
+  if (graphState.loading) return;
+  graphState.loading = true;
+  setGraphStatus("Loading graph...", false);
+  try {
+    const payload = await fetchJson(`/api/graph/${encodeURIComponent(sessionId)}`);
+    graphState.loadedSessionId = sessionId;
+    graphState.nodes = Array.isArray(payload.nodes) ? payload.nodes.map(normalizeGraphNode).filter(Boolean) : [];
+    graphState.edges = Array.isArray(payload.edges) ? payload.edges.map(normalizeGraphEdge).filter(Boolean) : [];
+    if (graphState.selectedNodeId && !graphNodeById(graphState.selectedNodeId)) {
+      graphState.selectedNodeId = null;
+    }
+    setGraphStatus(
+      `${graphState.nodes.length} nodes · ${graphState.edges.length} edges`,
+      false
+    );
+    renderGraph();
+  } catch (error) {
+    setGraphStatus(error.message || "Could not load graph.", true);
+  } finally {
+    graphState.loading = false;
+  }
+}
+
+async function ensureGraphViewReady(force = false) {
+  if (!activeSessionId) {
+    graphState.nodes = [];
+    graphState.edges = [];
+    graphState.selectedNodeId = null;
+    renderGraph();
+    return;
+  }
+  await loadGraphForSession(activeSessionId, { force });
+}
+
+let graphRefreshTimer = null;
+function scheduleGraphRefresh(delayMs = 260) {
+  if (!activeSessionId) return;
+  if (graphRefreshTimer) {
+    window.clearTimeout(graphRefreshTimer);
+  }
+  graphRefreshTimer = window.setTimeout(() => {
+    graphRefreshTimer = null;
+    loadGraphForSession(activeSessionId, { force: true });
+  }, delayMs);
+}
+
+let graphInteractionsBound = false;
+function setupGraphInteractions() {
+  if (graphInteractionsBound) return;
+  graphInteractionsBound = true;
+
+  graphCanvas?.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || graphState.draggingNodeId) return;
+    event.preventDefault();
+    graphState.pan = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: graphState.viewport.x,
+      originY: graphState.viewport.y,
+    };
+    graphCanvas.classList.add("panning");
+  });
+
+  window.addEventListener("pointermove", (event) => {
+    if (graphState.draggingNodeId) {
+      const node = graphNodeById(graphState.draggingNodeId);
+      if (!node) return;
+      const beforeX = Number(node.x) || 0;
+      const beforeY = Number(node.y) || 0;
+      const world = screenToWorld(event.clientX, event.clientY);
+      node.x = world.x;
+      node.y = world.y;
+      if (
+        graphState.dragStart &&
+        (Math.abs((Number(node.x) || 0) - graphState.dragStart.x) > 1 ||
+          Math.abs((Number(node.y) || 0) - graphState.dragStart.y) > 1 ||
+          Math.abs((Number(node.x) || 0) - beforeX) > 0.1 ||
+          Math.abs((Number(node.y) || 0) - beforeY) > 0.1)
+      ) {
+        graphState.dragStart.moved = true;
+      }
+      renderGraph();
+      return;
+    }
+    if (!graphState.pan) return;
+    const dx = event.clientX - graphState.pan.startX;
+    const dy = event.clientY - graphState.pan.startY;
+    graphState.viewport.x = graphState.pan.originX + dx;
+    graphState.viewport.y = graphState.pan.originY + dy;
+    renderGraph();
+  });
+
+  window.addEventListener("pointerup", async () => {
+    if (graphState.pan) {
+      graphState.pan = null;
+      graphCanvas?.classList.remove("panning");
+    }
+    if (graphState.draggingNodeId) {
+      const nodeId = graphState.draggingNodeId;
+      const dragMoved = graphState.dragStart?.moved === true;
+      graphState.draggingNodeId = null;
+      graphState.dragStart = null;
+      const node = graphNodeById(nodeId);
+      if (node && dragMoved) {
+        try {
+          await patchGraphNode(node.id, { x: node.x, y: node.y });
+        } catch (_err) {
+          // Ignore transient drag-save errors.
+        }
+      }
+      renderGraph();
+    }
+  });
+
+  graphCanvas?.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+      if (!graphCanvas) return;
+      const rect = graphCanvas.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const cursorY = event.clientY - rect.top;
+      const { cx, cy } = graphCenterOffset();
+      const scale = graphState.viewport.scale;
+      const worldX = (cursorX - cx - graphState.viewport.x) / scale;
+      const worldY = (cursorY - cy - graphState.viewport.y) / scale;
+      const delta = event.deltaY < 0 ? 1.08 : 0.92;
+      const nextScale = Math.max(0.3, Math.min(3.2, graphState.viewport.scale * delta));
+      graphState.viewport.scale = nextScale;
+      graphState.viewport.x = cursorX - cx - worldX * nextScale;
+      graphState.viewport.y = cursorY - cy - worldY * nextScale;
+      renderGraph();
+    },
+    { passive: false }
+  );
+
+  graphResetBtn?.addEventListener("click", () => {
+    resetGraphViewport();
+    renderGraph();
+  });
+
+  graphRefreshBtn?.addEventListener("click", async () => {
+    await ensureGraphViewReady(true);
+  });
+
+  graphAddNoteBtn?.addEventListener("click", async () => {
+    try {
+      await createGraphNoteNode();
+    } catch (error) {
+      setGraphStatus(error.message || "Could not create node.", true);
+    }
+  });
+
+  graphNodeSaveBtn?.addEventListener("click", async () => {
+    const selected = graphNodeById(graphState.selectedNodeId);
+    if (!selected || !activeSessionId) return;
+    const confidenceRaw = graphNodeConfidenceInput?.value;
+    const confidenceValue =
+      confidenceRaw === "" || confidenceRaw === undefined || confidenceRaw === null
+        ? null
+        : Number.isFinite(Number(confidenceRaw))
+          ? Math.max(0, Math.min(1, Number(confidenceRaw)))
+          : null;
+    const patch = {
+      label: normalizeText(graphNodeLabelInput?.value, selected.label),
+      type: normalizeText(graphNodeTypeInput?.value, selected.type),
+      status: normalizeText(graphNodeStatusInput?.value, selected.status),
+      severity: normalizeText(graphNodeSeverityInput?.value, selected.severity),
+      description: normalizeText(graphNodeDescriptionInput?.value, selected.description),
+      confidence: confidenceValue,
+    };
+    try {
+      setGraphStatus("Saving node...", false);
+      updateGraphLocalNode(selected.id, patch);
+      renderGraph();
+      await patchGraphNode(selected.id, patch);
+      setGraphStatus("Node saved.", false);
+    } catch (error) {
+      setGraphStatus(error.message || "Could not save node.", true);
+    }
+  });
+}
+
 function readSessionPaneCollapsed() {
   try {
     return localStorage.getItem(SESSION_PANE_COLLAPSED_KEY) === "1";
@@ -973,6 +1510,19 @@ function setActiveSession(session) {
   }
   renderSessionList();
   renderExecutionEmpty("Run a prompt to stream terminal output.");
+
+  graphState.loadedSessionId = null;
+  graphState.nodes = [];
+  graphState.edges = [];
+  graphState.selectedNodeId = null;
+  if (isGraphTabActive()) {
+    ensureGraphViewReady(true).catch(() => {
+      setGraphStatus("Could not load graph.", true);
+    });
+  } else {
+    setGraphStatus("");
+    renderGraph();
+  }
 }
 
 function normalizeSessionSummaries(summaries) {
@@ -1573,6 +2123,17 @@ function handleStreamEvent(type, data, run) {
       break;
   }
 
+  const eventSessionId = normalizeText(data.session_id, "");
+  const sessionMatches = !eventSessionId || (activeSessionId && eventSessionId === activeSessionId);
+  const shouldRefreshGraph = isGraphTabActive() || graphState.loadedSessionId === activeSessionId;
+  if (
+    sessionMatches &&
+    shouldRefreshGraph &&
+    ["tool_start", "tool_update", "tool_execution", "run_status", "final_result", "error", "done"].includes(type)
+  ) {
+    scheduleGraphRefresh(type === "tool_update" ? 420 : 220);
+  }
+
   ensureJumpLatestButton();
   if (!autoScrollEnabled && jumpLatestBtn) {
     unseenEventCount += 1;
@@ -1926,16 +2487,19 @@ settingsForm?.addEventListener("submit", async (event) => {
 
 async function bootstrap() {
   setupResizablePanes();
+  setupGraphInteractions();
   applySessionPaneCollapsed(readSessionPaneCollapsed());
   setUnlocked(hasGateway);
   restoreExecutionWidth();
   showExecutionTab("terminal");
   renderExecutionEmpty();
+  renderGraph();
   if (hasGateway) {
     try {
       await ensureActiveSession();
       await refreshSessionSummaries();
       await ensureAnthropicKeyConfigured({ showModal: true });
+      await ensureGraphViewReady();
     } catch (error) {
       setStatus(promptStatus, error.message || "Could not load session.", false);
     }

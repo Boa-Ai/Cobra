@@ -35,6 +35,7 @@ instance/
 .claw_state.json
 .cobra_state.json
 .claw_sessions.json
+.claw_graph.json
 
 # IDE
 .vscode/

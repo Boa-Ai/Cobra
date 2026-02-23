@@ -169,7 +169,51 @@
             role="tabpanel"
             aria-labelledby="execution-tab-graph"
           >
-            <div class="graph-placeholder">Graph view is empty for now.</div>
+            <div class="graph-view">
+              <div class="graph-canvas-wrap">
+                <div class="graph-toolbar">
+                  <div class="graph-toolbar-left">
+                    <button id="graph-reset-btn" class="ghost-btn graph-action-btn" type="button">Reset View</button>
+                    <button id="graph-refresh-btn" class="ghost-btn graph-action-btn" type="button">Refresh</button>
+                    <button id="graph-add-note-btn" class="ghost-btn graph-action-btn" type="button">+ Note</button>
+                  </div>
+                  <div id="graph-status" class="graph-status" aria-live="polite"></div>
+                </div>
+                <div id="graph-canvas" class="graph-canvas" tabindex="0" aria-label="Mission graph canvas">
+                  <svg id="graph-edges-layer" class="graph-edges-layer" aria-hidden="true"></svg>
+                  <div id="graph-nodes-layer" class="graph-nodes-layer"></div>
+                </div>
+              </div>
+              <div id="graph-inspector" class="graph-inspector">
+                <div class="graph-inspector-head">
+                  <h3>Node</h3>
+                  <div id="graph-node-id" class="graph-node-id">None selected</div>
+                </div>
+                <div class="graph-inspector-fields">
+                  <label for="graph-node-label">Label</label>
+                  <input id="graph-node-label" type="text" placeholder="Select a node" />
+
+                  <label for="graph-node-type">Type</label>
+                  <input id="graph-node-type" type="text" placeholder="Type" />
+
+                  <label for="graph-node-status">Status</label>
+                  <input id="graph-node-status" type="text" placeholder="Status" />
+
+                  <label for="graph-node-severity">Severity</label>
+                  <input id="graph-node-severity" type="text" placeholder="Severity" />
+
+                  <label for="graph-node-confidence">Confidence (0-1)</label>
+                  <input id="graph-node-confidence" type="number" min="0" max="1" step="0.01" placeholder="0.50" />
+
+                  <label for="graph-node-description">Description</label>
+                  <textarea id="graph-node-description" rows="4" placeholder="Node details"></textarea>
+                </div>
+                <div class="graph-inspector-actions">
+                  <button id="graph-node-save-btn" class="cta-btn" type="button">Save Node</button>
+                </div>
+                <div id="graph-node-links" class="graph-node-links"></div>
+              </div>
+            </div>
           </section>
           <section
             id="execution-files-view"

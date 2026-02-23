@@ -2,20 +2,30 @@ import json
 import mimetypes
 import os
 import queue
+import re
 import socket
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
-from cobra_lite.config import BASE_DIR, OPENCLAW_GATEWAY_URL, OPENCLAW_STATE_DIR, SESSIONS_FILE, STATE_FILE
+from cobra_lite.config import (
+    BASE_DIR,
+    GRAPH_FILE,
+    OPENCLAW_GATEWAY_URL,
+    OPENCLAW_STATE_DIR,
+    SESSIONS_FILE,
+    STATE_FILE,
+)
 from cobra_lite.services.gateway_client import (
     effective_gateway_url,
     extract_missing_provider,
     send_to_openclaw,
     verify_openclaw_connection,
 )
+from cobra_lite.services.graph_store import GraphStore
 from cobra_lite.services.session_store import SessionStore
 from cobra_lite.services.state_store import JsonStateStore
 
@@ -48,6 +58,28 @@ def _enqueue_progress(event_queue: queue.Queue, payload: dict[str, Any]) -> None
     event_queue.put(payload)
 
 
+GRAPH_UPDATE_BLOCK_RE = re.compile(r"<graph_update>\s*(.*?)\s*</graph_update>", re.IGNORECASE | re.DOTALL)
+
+
+def _extract_graph_update_block(text: str) -> tuple[str, dict[str, Any] | None]:
+    raw = str(text or "")
+    match = GRAPH_UPDATE_BLOCK_RE.search(raw)
+    if not match:
+        return raw.strip(), None
+
+    payload_raw = (match.group(1) or "").strip()
+    parsed: dict[str, Any] | None = None
+    try:
+        loaded = json.loads(payload_raw)
+        if isinstance(loaded, dict):
+            parsed = loaded
+    except json.JSONDecodeError:
+        parsed = None
+
+    cleaned = GRAPH_UPDATE_BLOCK_RE.sub("", raw, count=1).strip()
+    return cleaned, parsed
+
+
 def create_app() -> Flask:
     app = Flask(
         __name__,
@@ -59,6 +91,7 @@ def create_app() -> Flask:
 
     state_store = JsonStateStore(STATE_FILE)
     session_store = SessionStore(SESSIONS_FILE)
+    graph_store = GraphStore(GRAPH_FILE)
     workspace_dir_override = str(os.getenv("OPENCLAW_WORKSPACE_DIR") or "").strip()
     file_read_limit = 256_000
     list_limit = 1000
@@ -285,6 +318,7 @@ def create_app() -> Flask:
         payload = request.get_json(silent=True) or {}
         title = str(payload.get("title") or "").strip() or None
         session = session_store.create_session(title=title)
+        graph_store.get_graph(str(session.get("id")))
         return jsonify({"ok": True, "session": session})
 
     @app.get("/api/sessions/<session_id>")
@@ -300,7 +334,54 @@ def create_app() -> Flask:
         deleted = session_store.delete_session(session_id)
         if not deleted:
             return jsonify({"ok": False, "message": "Session not found."}), 404
+        graph_store.delete_session(session_id)
         return jsonify({"ok": True, "message": "Session deleted."})
+
+    @app.get("/api/graph/<session_id>")
+    def get_graph(session_id: str):
+        if not session_store.get_session(session_id):
+            return jsonify({"ok": False, "message": "Session not found."}), 404
+        graph = graph_store.get_graph(session_id)
+        return jsonify({"ok": True, **graph})
+
+    @app.get("/api/graph/context/<session_id>")
+    def get_graph_context(session_id: str):
+        if not session_store.get_session(session_id):
+            return jsonify({"ok": False, "message": "Session not found."}), 404
+        context_text = graph_store.build_context(session_id)
+        return jsonify({"ok": True, "session_id": session_id, "context": context_text})
+
+    @app.post("/api/graph/<session_id>/nodes")
+    def create_graph_node(session_id: str):
+        if not session_store.get_session(session_id):
+            return jsonify({"ok": False, "message": "Session not found."}), 404
+        payload = request.get_json(silent=True) or {}
+        try:
+            node = graph_store.create_node(session_id, payload, created_by="user")
+        except ValueError as exc:
+            return jsonify({"ok": False, "message": str(exc)}), 400
+        return jsonify({"ok": True, "node": node})
+
+    @app.patch("/api/graph/<session_id>/nodes/<node_id>")
+    def patch_graph_node(session_id: str, node_id: str):
+        if not session_store.get_session(session_id):
+            return jsonify({"ok": False, "message": "Session not found."}), 404
+        payload = request.get_json(silent=True) or {}
+        node = graph_store.patch_node(session_id, node_id, payload)
+        if not node:
+            return jsonify({"ok": False, "message": "Node not found or invalid payload."}), 404
+        return jsonify({"ok": True, "node": node})
+
+    @app.post("/api/graph/<session_id>/edges")
+    def create_graph_edge(session_id: str):
+        if not session_store.get_session(session_id):
+            return jsonify({"ok": False, "message": "Session not found."}), 404
+        payload = request.get_json(silent=True) or {}
+        try:
+            edge = graph_store.create_edge(session_id, payload, created_by="user")
+        except ValueError as exc:
+            return jsonify({"ok": False, "message": str(exc)}), 400
+        return jsonify({"ok": True, "edge": edge})
 
     @app.post("/api/verify-gateway")
     def verify_gateway():
@@ -355,20 +436,31 @@ def create_app() -> Flask:
             session_store.append_message(session_id, "assistant", f"Error: {missing_payload['message']}")
             return jsonify({**missing_payload, "session_id": session_id}), 400
 
+        run_id = f"run-{uuid.uuid4().hex[:12]}"
+        graph_store.start_run(session_id, run_id, prompt)
+        graph_context = graph_store.build_context(session_id)
+
         try:
             result = send_to_openclaw(
                 prompt=prompt,
                 gateway_url=gateway_url,
                 session_id=session_id,
                 anthropic_api_key=anthropic_api_key,
+                graph_context=graph_context,
             )
-            final_text = str(result.get("final_observation") or "Task completed.").strip()
+            final_text_raw = str(result.get("final_observation") or "Task completed.").strip()
+            final_text, graph_update = _extract_graph_update_block(final_text_raw)
+            if graph_update:
+                graph_store.apply_agent_update(session_id, run_id, graph_update)
+            result["final_observation"] = final_text
             session_store.append_message(session_id, "assistant", final_text)
+            graph_store.finalize_run(session_id, run_id, final_text, ok=True)
             return jsonify(
                 {
                     "ok": True,
                     "message": "Prompt accepted.",
                     "session_id": session_id,
+                    "run_id": run_id,
                     "result": result,
                 }
             )
@@ -378,8 +470,12 @@ def create_app() -> Flask:
             if missing_provider:
                 missing_payload = _missing_provider_payload(missing_provider)
                 session_store.append_message(session_id, "assistant", f"Error: {missing_payload['message']}")
+                graph_store.ingest_event(session_id, run_id, "error", {"message": missing_payload["message"]})
+                graph_store.finalize_run(session_id, run_id, f"Error: {missing_payload['message']}", ok=False)
                 return jsonify({**missing_payload, "session_id": session_id}), 400
             session_store.append_message(session_id, "assistant", f"Error: {error_message}")
+            graph_store.ingest_event(session_id, run_id, "error", {"message": error_message})
+            graph_store.finalize_run(session_id, run_id, f"Error: {error_message}", ok=False)
             return jsonify({"ok": False, "session_id": session_id, "message": error_message}), 500
 
     @app.post("/api/prompt/stream")
@@ -398,10 +494,23 @@ def create_app() -> Flask:
             session_store.append_message(session_id, "assistant", f"Error: {missing_payload['message']}")
             return jsonify({**missing_payload, "session_id": session_id}), 400
 
+        run_id = f"run-{uuid.uuid4().hex[:12]}"
+        graph_store.start_run(session_id, run_id, prompt)
+        graph_context = graph_store.build_context(session_id)
+
         events: queue.Queue = queue.Queue()
 
         def emit(event: dict[str, Any]) -> None:
-            _enqueue_progress(events, event)
+            payload = event if isinstance(event, dict) else {"type": "message", "data": event}
+            event_type = str(payload.get("type") or "message").strip() or "message"
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            tagged_data = {**data, "session_id": session_id, "run_id": run_id}
+            try:
+                graph_store.ingest_event(session_id, run_id, event_type, tagged_data)
+            except Exception:
+                # Keep streaming resilient if graph ingestion fails.
+                pass
+            _enqueue_progress(events, {"type": event_type, "data": tagged_data})
 
         def execute() -> None:
             try:
@@ -410,16 +519,24 @@ def create_app() -> Flask:
                     gateway_url=gateway_url,
                     session_id=session_id,
                     anthropic_api_key=anthropic_api_key,
+                    graph_context=graph_context,
                     progress_callback=emit,
                 )
-                final_text = str(result.get("final_observation") or "Task completed.").strip()
+                final_text_raw = str(result.get("final_observation") or "Task completed.").strip()
+                final_text, graph_update = _extract_graph_update_block(final_text_raw)
+                if graph_update:
+                    graph_store.apply_agent_update(session_id, run_id, graph_update)
+                result["final_observation"] = final_text
                 session_store.append_message(session_id, "assistant", final_text)
+                graph_store.finalize_run(session_id, run_id, final_text, ok=True)
             except Exception as exc:
                 message = str(exc)
                 missing_provider = extract_missing_provider(message)
                 if missing_provider:
                     missing_payload = _missing_provider_payload(missing_provider)
                     session_store.append_message(session_id, "assistant", f"Error: {missing_payload['message']}")
+                    graph_store.ingest_event(session_id, run_id, "error", {"message": missing_payload["message"]})
+                    graph_store.finalize_run(session_id, run_id, f"Error: {missing_payload['message']}", ok=False)
                     emit(
                         {
                             "type": "error",
@@ -428,18 +545,21 @@ def create_app() -> Flask:
                                 "code": missing_payload["code"],
                                 "provider": missing_provider,
                                 "session_id": session_id,
+                                "run_id": run_id,
                             },
                         }
                     )
                 else:
                     session_store.append_message(session_id, "assistant", f"Error: {message}")
-                    emit({"type": "error", "data": {"message": message, "session_id": session_id}})
-                emit({"type": "done", "data": {"ok": False, "session_id": session_id}})
+                    graph_store.ingest_event(session_id, run_id, "error", {"message": message})
+                    graph_store.finalize_run(session_id, run_id, f"Error: {message}", ok=False)
+                    emit({"type": "error", "data": {"message": message, "session_id": session_id, "run_id": run_id}})
+                emit({"type": "done", "data": {"ok": False, "session_id": session_id, "run_id": run_id}})
                 events.put(None)
                 return
 
-            emit({"type": "final_result", "data": {"result": result, "session_id": session_id}})
-            emit({"type": "done", "data": {"ok": True, "session_id": session_id}})
+            emit({"type": "final_result", "data": {"result": result, "session_id": session_id, "run_id": run_id}})
+            emit({"type": "done", "data": {"ok": True, "session_id": session_id, "run_id": run_id}})
             events.put(None)
 
         thread = threading.Thread(target=execute, daemon=True)

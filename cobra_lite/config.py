@@ -37,6 +37,7 @@ COBRA_AUTO_INSTALL_TOOLS = env_flag("COBRA_AUTO_INSTALL_TOOLS", True)
 
 STATE_FILE = Path(os.getenv("STATE_FILE", BASE_DIR / ".claw_state.json"))
 SESSIONS_FILE = Path(os.getenv("SESSIONS_FILE", BASE_DIR / ".claw_sessions.json"))
+GRAPH_FILE = Path(os.getenv("GRAPH_FILE", BASE_DIR / ".claw_graph.json"))
 
 
 def default_openclaw_gateway_url() -> str:
