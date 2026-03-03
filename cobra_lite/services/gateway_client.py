@@ -646,9 +646,12 @@ def send_to_openclaw(
                                 phase = str(data.get("phase") or "").strip().lower()
                                 tool_name = str(data.get("name") or "tool").strip() or "tool"
                                 if _tool_disallowed_for_mode(tool_name):
-                                    raise _PolicyViolationError(
-                                        f"Policy blocked non-CLI tool '{tool_name}' in {COBRA_EXECUTION_MODE} mode."
-                                    )
+                                    # Log but don't kill the run - let the agent continue with CLI tools
+                                    if progress_callback:
+                                        progress_callback({
+                                            "type": "reasoning",
+                                            "data": {"text": f"Note: tool '{tool_name}' is not available in CLI-only mode. Agent should use terminal commands instead."},
+                                        })
                                 execution_id = str(data.get("toolCallId") or "").strip()
                                 args = data.get("args") if isinstance(data.get("args"), dict) else {}
                                 command = (
@@ -1240,9 +1243,11 @@ def send_to_openclaw(
                     elif event_type == "tool_call":
                         tool_name = str(data.get("tool") or "").strip()
                         if _tool_disallowed_for_mode(tool_name):
-                            raise _PolicyViolationError(
-                                f"Policy blocked non-CLI tool '{tool_name}' in {COBRA_EXECUTION_MODE} mode."
-                            )
+                            if progress_callback:
+                                progress_callback({
+                                    "type": "reasoning",
+                                    "data": {"text": f"Note: tool '{tool_name}' is not available in CLI-only mode."},
+                                })
                         if progress_callback:
                             progress_callback(
                                 {
