@@ -226,16 +226,26 @@ body:not(.sidebar-enabled) .token-panel {
 .session-pane-head h2 {
   margin: 0;
   font-family: "IBM Plex Mono", monospace;
-  font-size: 0.96rem;
-  letter-spacing: 0.08em;
+  font-size: 1rem;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--text);
 }
 
 .new-session-btn {
   width: 100%;
-  border-color: rgba(83, 194, 255, 0.34);
-  color: var(--accent);
+  justify-content: flex-start;
+  border-color: rgba(122, 213, 71, 0.44);
+  background: linear-gradient(90deg, rgba(122, 213, 71, 0.9), rgba(43, 200, 150, 0.78));
+  color: #051109;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 0 22px rgba(122, 213, 71, 0.08);
+}
+
+.new-session-btn:hover,
+.new-session-btn:focus-visible {
+  color: #041108;
+  border-color: rgba(122, 213, 71, 0.72);
+  filter: brightness(1.03);
 }
 
 .session-fold-btn {
@@ -270,19 +280,31 @@ body:not(.sidebar-enabled) .token-panel {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.35rem;
-  background: rgba(8, 19, 14, 0.7);
-  border: 1px solid transparent;
+  cursor: pointer;
+  background:
+    linear-gradient(180deg, rgba(8, 19, 14, 0.92), rgba(6, 13, 10, 0.96));
+  border: 1px solid rgba(35, 66, 50, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 }
 
 .session-item:hover,
 .session-item:focus-within {
-  border-color: var(--line-strong);
-  background: rgba(10, 24, 17, 0.92);
+  border-color: rgba(122, 213, 71, 0.32);
+  background:
+    linear-gradient(180deg, rgba(11, 25, 18, 0.96), rgba(7, 15, 11, 0.98));
 }
 
 .session-item.active {
-  border-color: rgba(122, 213, 71, 0.48);
-  background: rgba(19, 53, 34, 0.55);
+  border-color: rgba(122, 213, 71, 0.5);
+  background:
+    linear-gradient(180deg, rgba(20, 49, 34, 0.88), rgba(8, 18, 13, 0.98));
+  box-shadow: 0 0 0 1px rgba(122, 213, 71, 0.12), 0 0 24px rgba(122, 213, 71, 0.06);
+}
+
+.session-item:focus-visible {
+  outline: none;
+  border-color: rgba(122, 213, 71, 0.62);
+  box-shadow: 0 0 0 1px rgba(122, 213, 71, 0.2), 0 0 0 3px rgba(122, 213, 71, 0.08);
 }
 
 .session-select {
@@ -299,7 +321,8 @@ body:not(.sidebar-enabled) .token-panel {
 .session-title {
   display: block;
   font-family: "IBM Plex Mono", monospace;
-  font-size: 0.82rem;
+  font-size: 0.84rem;
+  font-weight: 600;
   line-height: 1.3;
   white-space: nowrap;
   overflow: hidden;
@@ -384,6 +407,14 @@ body.sessions-collapsed .session-fold-btn {
   gap: 0.75rem;
 }
 
+.mission-center-shell {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
 .token-panel,
 .prompt-panel,
 .execution-pane,
@@ -401,6 +432,155 @@ body.sessions-collapsed .session-fold-btn {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.mission-center-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: end;
+}
+
+.mission-center-active {
+  display: grid;
+  gap: 0.28rem;
+  justify-items: end;
+}
+
+.mission-center-active-label {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.mission-center-active-title {
+  max-width: min(22rem, 42vw);
+  border: 1px solid rgba(122, 213, 71, 0.28);
+  background: rgba(9, 20, 14, 0.82);
+  color: var(--text);
+  padding: 0.52rem 0.7rem;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.84rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mission-center-copy h2 {
+  margin: 0;
+  font-size: 1.32rem;
+  line-height: 1.05;
+}
+
+.mission-center-copy p {
+  margin: 0.28rem 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.mission-center-copy code {
+  color: var(--accent);
+}
+
+.mission-center-tabs {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 0 0 0.2rem;
+  border-bottom: 1px solid rgba(44, 91, 66, 0.72);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.mission-center-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.mission-center-tab {
+  position: relative;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 0 0.7rem;
+  cursor: pointer;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.94rem;
+  font-weight: 500;
+}
+
+.mission-center-tab::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.16s ease;
+}
+
+.mission-center-tab:hover,
+.mission-center-tab:focus-visible {
+  color: var(--text);
+}
+
+.mission-center-tab.active {
+  color: var(--text);
+}
+
+.mission-center-tab.active::after {
+  transform: scaleX(1);
+}
+
+.mission-center-view {
+  min-height: 0;
+  height: 100%;
+}
+
+.mission-placeholder-card {
+  height: 100%;
+  min-height: 16rem;
+  border: 1px solid rgba(33, 63, 47, 0.95);
+  background:
+    linear-gradient(180deg, rgba(8, 18, 13, 0.9), rgba(4, 10, 8, 0.96));
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.7rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.mission-placeholder-kicker {
+  color: var(--accent);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.mission-placeholder-card h3 {
+  margin: 0;
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.mission-placeholder-card p {
+  max-width: 42rem;
+  margin: 0;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  line-height: 1.6;
+}
+
+#mission-chat-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .token-panel h2 {
@@ -423,6 +603,12 @@ body.sessions-collapsed .session-fold-btn {
 .prompt-header h2 {
   margin: 0;
   font-size: 1.24rem;
+  letter-spacing: 0.01em;
+}
+
+.prompt-header h3 {
+  margin: 0;
+  font-size: 1.14rem;
   letter-spacing: 0.01em;
 }
 
@@ -559,6 +745,8 @@ body.sessions-collapsed .session-fold-btn {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative;
+  overflow: hidden;
 }
 
 .pane-resizer {
@@ -611,32 +799,35 @@ body.dragging-row * {
   align-items: center;
   gap: 0.8rem;
   margin-bottom: 0.68rem;
+  padding-bottom: 0.55rem;
+  border-bottom: 1px solid rgba(44, 91, 66, 0.72);
 }
 
 .execution-header h2 {
   margin: 0;
-  font-size: 1.06rem;
-  letter-spacing: 0.04em;
+  font-size: 1rem;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   font-family: "IBM Plex Mono", monospace;
 }
 
 .execution-tabs {
   display: inline-flex;
-  border: 1px solid var(--line-strong);
-  background: #07120d;
+  align-items: center;
+  gap: 0.9rem;
 }
 
 .execution-tab {
   border: 0;
   background: transparent;
   color: var(--muted);
-  padding: 0.35rem 0.66rem;
+  padding: 0 0 0.46rem;
   cursor: pointer;
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.76rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  position: relative;
 }
 
 .execution-tab:hover,
@@ -645,8 +836,24 @@ body.dragging-row * {
 }
 
 .execution-tab.active {
-  color: #041108;
+  color: var(--text);
+}
+
+.execution-tab::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -0.56rem;
+  height: 2px;
   background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.16s ease;
+}
+
+.execution-tab.active::after {
+  transform: scaleX(1);
 }
 
 .execution-view {
@@ -658,7 +865,9 @@ body.dragging-row * {
   height: 100%;
   overflow: auto;
   border: 1px solid var(--line);
-  background: #06110b;
+  background:
+    radial-gradient(circle at top center, rgba(20, 42, 31, 0.2), transparent 28%),
+    #06110b;
   padding: 0.62rem;
   scrollbar-gutter: stable;
 }
@@ -1649,6 +1858,23 @@ textarea:focus {
     flex-direction: column;
     align-items: flex-start;
     gap: 0.35rem;
+  }
+
+  .mission-center-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mission-center-tabs {
+    gap: 0.9rem;
+  }
+
+  .mission-center-active {
+    justify-items: start;
+  }
+
+  .mission-center-active-title {
+    max-width: 100%;
   }
 
   .prompt-composer {

@@ -40,19 +40,19 @@
         <aside id="session-pane" class="session-pane {% if not has_gateway %}hidden{% endif %}">
           <div class="session-pane-head">
             <div class="session-pane-head-row">
-              <h2>Sessions</h2>
+              <h2>Missions</h2>
               <button
                 id="session-fold-btn"
                 class="session-fold-btn"
                 type="button"
                 aria-expanded="true"
                 aria-controls="session-list"
-                title="Collapse sessions"
+                title="Collapse missions"
               >
                 «
               </button>
             </div>
-            <button id="new-session-btn" class="ghost-btn new-session-btn" type="button">+ New Session</button>
+            <button id="new-session-btn" class="ghost-btn new-session-btn" type="button">+ New Mission</button>
           </div>
           <div id="session-list" class="session-list" aria-live="polite"></div>
           <p id="session-status" class="status-text" aria-live="polite"></p>
@@ -89,11 +89,130 @@
           </section>
 
           <section id="main-app" class="panel prompt-panel {% if not has_gateway %}hidden{% endif %}">
-            <div class="prompt-header">
-              <h2>Chat</h2>
-              <p>User messages and final AI answers appear here.</p>
+            <div class="mission-center-shell">
+              <div class="mission-center-head">
+                <div class="mission-center-copy">
+                  <h2>Mission Workspace</h2>
+                  <p>Switch between mission views. <code>Chat</code> is live; the others are staged.</p>
+                </div>
+                <div class="mission-center-active">
+                  <span class="mission-center-active-label">Active Mission</span>
+                  <div id="mission-active-title" class="mission-center-active-title">New Mission</div>
+                </div>
+              </div>
+              <div class="mission-center-tabs" role="tablist" aria-label="Mission workspace views">
+                <button
+                  id="mission-tab-overview"
+                  class="mission-center-tab active"
+                  type="button"
+                  role="tab"
+                  aria-selected="true"
+                  aria-controls="mission-overview-view"
+                >
+                  Overview
+                </button>
+                <button
+                  id="mission-tab-findings"
+                  class="mission-center-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="mission-findings-view"
+                >
+                  Findings
+                </button>
+                <button
+                  id="mission-tab-evidence"
+                  class="mission-center-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="mission-evidence-view"
+                >
+                  Evidence
+                </button>
+                <button
+                  id="mission-tab-plan"
+                  class="mission-center-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="mission-plan-view"
+                >
+                  Plan
+                </button>
+                <button
+                  id="mission-tab-chat"
+                  class="mission-center-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="mission-chat-view"
+                >
+                  Chat
+                </button>
+              </div>
+              <section
+                id="mission-overview-view"
+                class="mission-center-view"
+                role="tabpanel"
+                aria-labelledby="mission-tab-overview"
+              >
+                <div class="mission-placeholder-card">
+                  <span class="mission-placeholder-kicker">Overview</span>
+                  <h3>NOT IMPLEMENTED</h3>
+                  <p>This view should become the mission summary surface once overview blocks are defined.</p>
+                </div>
+              </section>
+              <section
+                id="mission-findings-view"
+                class="mission-center-view hidden"
+                role="tabpanel"
+                aria-labelledby="mission-tab-findings"
+              >
+                <div class="mission-placeholder-card">
+                  <span class="mission-placeholder-kicker">Findings</span>
+                  <h3>NOT IMPLEMENTED</h3>
+                  <p>This should become the mission finding register after we define finding objects and workflows.</p>
+                </div>
+              </section>
+              <section
+                id="mission-evidence-view"
+                class="mission-center-view hidden"
+                role="tabpanel"
+                aria-labelledby="mission-tab-evidence"
+              >
+                <div class="mission-placeholder-card">
+                  <span class="mission-placeholder-kicker">Evidence</span>
+                  <h3>NOT IMPLEMENTED</h3>
+                  <p>This should become the evidence timeline once artifacts and references have a dedicated schema.</p>
+                </div>
+              </section>
+              <section
+                id="mission-plan-view"
+                class="mission-center-view hidden"
+                role="tabpanel"
+                aria-labelledby="mission-tab-plan"
+              >
+                <div class="mission-placeholder-card">
+                  <span class="mission-placeholder-kicker">Plan</span>
+                  <h3>NOT IMPLEMENTED</h3>
+                  <p>This should become the operator plan once we define persistent planning state.</p>
+                </div>
+              </section>
+              <section
+                id="mission-chat-view"
+                class="mission-center-view hidden"
+                role="tabpanel"
+                aria-labelledby="mission-tab-chat"
+              >
+                <div class="prompt-header">
+                  <h3>Chat</h3>
+                  <p>Mission messages and final AI answers appear here.</p>
+                </div>
+                <div id="chat-thread" class="chat-thread" aria-live="polite"></div>
+              </section>
             </div>
-            <div id="chat-thread" class="chat-thread" aria-live="polite"></div>
           </section>
 
           <section id="composer-dock" class="composer-dock {% if not has_gateway %}hidden{% endif %}">
@@ -118,14 +237,14 @@
           class="pane-resizer pane-resizer-horizontal {% if not has_gateway %}hidden{% endif %}"
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize chat and execution panes"
+          aria-label="Resize mission workspace and activity panes"
           tabindex="0"
         ></div>
 
         <aside id="execution-pane" class="panel execution-pane {% if not has_gateway %}hidden{% endif %}">
           <div class="execution-header">
-            <h2>Execution</h2>
-            <div class="execution-tabs" role="tablist" aria-label="Execution view">
+            <h2>Activity</h2>
+            <div class="execution-tabs" role="tablist" aria-label="Activity view">
               <button
                 id="execution-tab-terminal"
                 class="execution-tab active"
@@ -160,7 +279,7 @@
           </div>
           <section id="execution-terminal-view" class="execution-view" role="tabpanel" aria-labelledby="execution-tab-terminal">
             <div id="execution-feed" class="execution-feed" aria-live="polite">
-              <div class="execution-empty">Run a prompt to stream terminal output.</div>
+              <div class="execution-empty">Run a prompt to stream mission activity.</div>
             </div>
           </section>
           <section

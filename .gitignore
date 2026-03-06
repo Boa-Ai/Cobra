@@ -48,6 +48,9 @@ instance/
 # Logs
 *.log
 
+# Local docs
+knowledgebase.md
+
 # Testing
 .coverage
 htmlcov/

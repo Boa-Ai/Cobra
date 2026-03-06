@@ -8,6 +8,17 @@ const keyGate = document.getElementById("key-gate");
 const mainApp = document.getElementById("main-app");
 const composerDock = document.getElementById("composer-dock");
 const chatColumn = document.querySelector(".chat-column");
+const missionTabOverview = document.getElementById("mission-tab-overview");
+const missionTabFindings = document.getElementById("mission-tab-findings");
+const missionTabEvidence = document.getElementById("mission-tab-evidence");
+const missionTabPlan = document.getElementById("mission-tab-plan");
+const missionTabChat = document.getElementById("mission-tab-chat");
+const missionActiveTitle = document.getElementById("mission-active-title");
+const missionOverviewView = document.getElementById("mission-overview-view");
+const missionFindingsView = document.getElementById("mission-findings-view");
+const missionEvidenceView = document.getElementById("mission-evidence-view");
+const missionPlanView = document.getElementById("mission-plan-view");
+const missionChatView = document.getElementById("mission-chat-view");
 const chatThread = document.getElementById("chat-thread");
 const sessionPane = document.getElementById("session-pane");
 const sessionList = document.getElementById("session-list");
@@ -88,6 +99,7 @@ let sessionSummaries = [];
 let anthropicConfigured = hasAnthropicKey;
 let sessionPaneCollapsed = false;
 let paneResizeHandlersBound = false;
+let activeMissionCenterTab = "overview";
 const executionHistoryBySession = new Map();
 let executionPersistTimer = null;
 let executionPersistInFlight = false;
@@ -365,6 +377,17 @@ function setStatus(node, message, ok) {
   node.classList.remove("ok", "bad");
   if (!message) return;
   node.classList.add(ok ? "ok" : "bad");
+}
+
+function formatMissionTitle(value) {
+  const normalized = normalizeText(value, "New Mission") || "New Mission";
+  return normalized === "New Chat" ? "New Mission" : normalized;
+}
+
+function syncActiveMissionHeader(title) {
+  if (!missionActiveTitle) return;
+  missionActiveTitle.textContent = formatMissionTitle(title);
+  missionActiveTitle.title = formatMissionTitle(title);
 }
 
 function setUnlocked(unlocked) {
@@ -783,6 +806,48 @@ function showExecutionTab(tab) {
   if (showGraph) {
     ensureGraphViewReady();
   }
+}
+
+function showMissionCenterTab(tab) {
+  const normalized = ["overview", "findings", "evidence", "plan", "chat"].includes(tab) ? tab : "overview";
+  activeMissionCenterTab = normalized;
+
+  const showOverview = normalized === "overview";
+  const showFindings = normalized === "findings";
+  const showEvidence = normalized === "evidence";
+  const showPlan = normalized === "plan";
+  const showChat = normalized === "chat";
+
+  missionOverviewView?.classList.toggle("hidden", !showOverview);
+  missionFindingsView?.classList.toggle("hidden", !showFindings);
+  missionEvidenceView?.classList.toggle("hidden", !showEvidence);
+  missionPlanView?.classList.toggle("hidden", !showPlan);
+  missionChatView?.classList.toggle("hidden", !showChat);
+
+  missionTabOverview?.classList.toggle("active", showOverview);
+  missionTabFindings?.classList.toggle("active", showFindings);
+  missionTabEvidence?.classList.toggle("active", showEvidence);
+  missionTabPlan?.classList.toggle("active", showPlan);
+  missionTabChat?.classList.toggle("active", showChat);
+
+  missionTabOverview?.setAttribute("aria-selected", showOverview ? "true" : "false");
+  missionTabFindings?.setAttribute("aria-selected", showFindings ? "true" : "false");
+  missionTabEvidence?.setAttribute("aria-selected", showEvidence ? "true" : "false");
+  missionTabPlan?.setAttribute("aria-selected", showPlan ? "true" : "false");
+  missionTabChat?.setAttribute("aria-selected", showChat ? "true" : "false");
+}
+
+function syncMissionViewForActiveSession() {
+  const hasMessages = activeSessionMessages.length > 0;
+  if (activeMissionCenterTab === "chat") {
+    showMissionCenterTab("chat");
+    return;
+  }
+  if (hasMessages) {
+    showMissionCenterTab("chat");
+    return;
+  }
+  showMissionCenterTab("overview");
 }
 
 function isGraphTabActive() {
@@ -1326,7 +1391,7 @@ function renderGraph() {
   if (!graphState.nodes.length) {
     const empty = document.createElement("div");
     empty.className = "graph-empty";
-    empty.textContent = "Graph is empty for this session";
+    empty.textContent = "Graph is empty for this mission";
     graphNodesLayer.appendChild(empty);
     renderGraphInspector();
     return;
@@ -1673,7 +1738,7 @@ function applySessionPaneCollapsed(collapsed) {
   document.body.classList.toggle("sessions-collapsed", sessionPaneCollapsed);
   if (sessionFoldBtn) {
     sessionFoldBtn.textContent = sessionPaneCollapsed ? "»" : "«";
-    sessionFoldBtn.title = sessionPaneCollapsed ? "Expand sessions" : "Collapse sessions";
+    sessionFoldBtn.title = sessionPaneCollapsed ? "Expand missions" : "Collapse missions";
     sessionFoldBtn.setAttribute("aria-expanded", sessionPaneCollapsed ? "false" : "true");
   }
 }
@@ -1744,7 +1809,7 @@ function createExecutionRunShell(promptText) {
 
   const runMeta = document.createElement("div");
   runMeta.className = "terminal-run-meta";
-  runMeta.textContent = `Run started · ${new Date().toLocaleTimeString()}`;
+  runMeta.textContent = `Activity started · ${new Date().toLocaleTimeString()}`;
   runShell.appendChild(runMeta);
 
   const runPrompt = document.createElement("div");
@@ -1763,7 +1828,7 @@ function createExecutionRunShell(promptText) {
   return { streamEvents };
 }
 
-function renderExecutionEmpty(message = "Run a prompt to stream terminal output.") {
+function renderExecutionEmpty(message = "Run a prompt to stream mission activity.") {
   if (!executionFeed) return;
   executionFeed.innerHTML = "";
   const empty = document.createElement("div");
@@ -1776,6 +1841,7 @@ function renderExecutionEmpty(message = "Run a prompt to stream terminal output.
 function setActiveSession(session) {
   const sessionId = normalizeText(session?.id, "");
   const messages = normalizeMessages(session?.messages);
+  const missionTitle = formatMissionTitle(session?.title);
   const previousSessionId = activeSessionId;
   if (previousSessionId && previousSessionId !== sessionId) {
     persistExecutionHistory(previousSessionId);
@@ -1787,7 +1853,7 @@ function setActiveSession(session) {
     const existingIndex = sessionSummaries.findIndex((item) => item.id === activeSessionId);
     const nextSummary = {
       id: activeSessionId,
-      title: normalizeText(session?.title, "New Chat") || "New Chat",
+      title: missionTitle,
       created_at: Number(session?.created_at) || Date.now() / 1000,
       updated_at: Number(session?.updated_at) || Date.now() / 1000,
       message_count: messages.length,
@@ -1802,9 +1868,12 @@ function setActiveSession(session) {
       executionHistoryBySession.set(activeSessionId, persistedExecutionHtml);
     }
   }
+  syncActiveMissionHeader(missionTitle);
   renderSessionList();
+  renderChatHistory(activeSessionMessages);
+  syncMissionViewForActiveSession();
   if (!restoreExecutionHistory(activeSessionId)) {
-    renderExecutionEmpty("Run a prompt to stream terminal output.");
+    renderExecutionEmpty("Run a prompt to stream mission activity.");
   } else {
     scrollExecutionToBottom();
   }
@@ -1830,7 +1899,7 @@ function normalizeSessionSummaries(summaries) {
     .filter((item) => item && typeof item === "object")
     .map((item) => ({
       id: normalizeText(item.id, ""),
-      title: normalizeText(item.title, "New Chat") || "New Chat",
+      title: formatMissionTitle(item.title),
       created_at: Number(item.created_at) || 0,
       updated_at: Number(item.updated_at) || 0,
       message_count: Number(item.message_count) || 0,
@@ -1860,7 +1929,7 @@ function renderSessionList() {
   if (!sessionSummaries.length) {
     const emptyNode = document.createElement("div");
     emptyNode.className = "session-empty";
-    emptyNode.textContent = "No sessions yet. Start a new one.";
+    emptyNode.textContent = "No missions yet. Start a new one.";
     sessionList.appendChild(emptyNode);
     return;
   }
@@ -1886,37 +1955,49 @@ function renderSessionList() {
     metaNode.textContent = relativeUpdated ? `${labelCount} · ${relativeUpdated}` : labelCount;
     selectBtn.appendChild(metaNode);
 
-    selectBtn.addEventListener("click", async () => {
+    const activateMission = async () => {
       if (summary.id === activeSessionId) return;
       if (isRunning) {
-        setSessionStatus("Wait for the current run to finish before switching sessions.", false);
+        setSessionStatus("Wait for the current run to finish before switching missions.", false);
         return;
       }
       try {
         await getSession(summary.id);
-        renderChatHistory(activeSessionMessages);
         setSessionStatus("", true);
         setStatus(promptStatus, "", true);
         scrollChatToBottom({ behavior: "auto", force: true });
       } catch (error) {
-        setSessionStatus(error.message || "Could not switch sessions.", false);
+        setSessionStatus(error.message || "Could not switch missions.", false);
       }
+    };
+
+    row.addEventListener("click", async (event) => {
+      if (event.target instanceof Element && event.target.closest(".session-delete")) {
+        return;
+      }
+      await activateMission();
+    });
+
+    selectBtn.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      await activateMission();
     });
 
     const deleteBtn = document.createElement("button");
     deleteBtn.type = "button";
     deleteBtn.className = "session-delete";
     deleteBtn.textContent = "×";
-    deleteBtn.title = "Delete session";
-    deleteBtn.setAttribute("aria-label", `Delete session ${summary.title}`);
+    deleteBtn.title = "Delete mission";
+    deleteBtn.setAttribute("aria-label", `Delete mission ${summary.title}`);
     deleteBtn.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
       if (isRunning && summary.id === activeSessionId) {
-        setSessionStatus("Wait for the current run to finish before deleting this session.", false);
+        setSessionStatus("Wait for the current run to finish before deleting this mission.", false);
         return;
       }
-      const confirmed = window.confirm(`Delete session "${summary.title}"? This cannot be undone.`);
+      const confirmed = window.confirm(`Delete mission "${summary.title}"? This cannot be undone.`);
       if (!confirmed) return;
 
       try {
@@ -1930,12 +2011,11 @@ function renderSessionList() {
           } else {
             await createSession();
           }
-          renderChatHistory(activeSessionMessages);
         }
         await refreshSessionSummaries();
-        setSessionStatus("Session deleted.", true);
+        setSessionStatus("Mission deleted.", true);
       } catch (error) {
-        setSessionStatus(error.message || "Could not delete session.", false);
+        setSessionStatus(error.message || "Could not delete mission.", false);
       }
     });
 
@@ -1963,9 +2043,9 @@ function touchActiveSessionSummary(role, content) {
   const next = { ...sessionSummaries[idx] };
   next.updated_at = nowSeconds;
   next.message_count = Math.max(0, Number(next.message_count) || 0) + 1;
-  if ((next.title === "New Chat" || !next.title) && role === "user") {
-    const firstLine = normalizeText(content, "New Chat").split("\n")[0];
-    next.title = firstLine.slice(0, 72) || "New Chat";
+  if ((next.title === "New Chat" || next.title === "New Mission" || !next.title) && role === "user") {
+    const firstLine = normalizeText(content, "New Mission").split("\n")[0];
+    next.title = firstLine.slice(0, 72) || "New Mission";
   }
   sessionSummaries[idx] = next;
   sessionSummaries.sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0));
@@ -1986,7 +2066,7 @@ async function createSession(title = "") {
     body: JSON.stringify({ title }),
   });
   if (!payload.session || typeof payload.session !== "object") {
-    throw new Error("Invalid create session response.");
+    throw new Error("Invalid create mission response.");
   }
   setActiveSession(payload.session);
   return payload.session;
@@ -1995,7 +2075,7 @@ async function createSession(title = "") {
 async function getSession(sessionId) {
   const payload = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}`);
   if (!payload.session || typeof payload.session !== "object") {
-    throw new Error("Invalid session response.");
+    throw new Error("Invalid mission response.");
   }
   setActiveSession(payload.session);
   return payload.session;
@@ -2584,6 +2664,7 @@ keyForm?.addEventListener("submit", async (event) => {
     await ensureAnthropicKeyConfigured({ showModal: true });
     renderChatHistory(activeSessionMessages);
     setUnlocked(true);
+    showMissionCenterTab(activeSessionMessages.length > 0 ? "chat" : "overview");
     resizePromptInput();
     promptInput?.focus();
     scrollChatToBottom({ behavior: "smooth", force: true });
@@ -2620,19 +2701,20 @@ authForm?.addEventListener("submit", async (event) => {
 
 newSessionBtn?.addEventListener("click", async () => {
   if (isRunning) {
-    setSessionStatus("Wait for the current run to finish before creating a new session.", false);
+    setSessionStatus("Wait for the current run to finish before creating a new mission.", false);
     return;
   }
   try {
     await createSession();
     await refreshSessionSummaries();
     renderChatHistory(activeSessionMessages);
-    setStatus(promptStatus, "Started a new session.", true);
+    showMissionCenterTab("overview");
+    setStatus(promptStatus, "Started a new mission.", true);
     setSessionStatus("", true);
     promptInput?.focus();
     scrollChatToBottom({ behavior: "auto", force: true });
   } catch (error) {
-    setSessionStatus(error.message || "Could not create a new session.", false);
+    setSessionStatus(error.message || "Could not create a new mission.", false);
   }
 });
 
@@ -2652,7 +2734,7 @@ promptForm?.addEventListener("submit", async (event) => {
     try {
       await ensureActiveSession();
     } catch (error) {
-      setStatus(promptStatus, error.message || "Could not initialize session.", false);
+      setStatus(promptStatus, error.message || "Could not initialize mission.", false);
       return;
     }
   }
@@ -2666,6 +2748,7 @@ promptForm?.addEventListener("submit", async (event) => {
     setStatus(promptStatus, error.message || "Could not verify provider auth.", false);
     return;
   }
+  showMissionCenterTab("chat");
   const run = createRunUI(prompt);
 
   run.commitAssistant = (text) => {
@@ -2779,6 +2862,26 @@ promptInput?.addEventListener("keydown", (event) => {
 });
 promptInput?.addEventListener("input", resizePromptInput);
 
+missionTabOverview?.addEventListener("click", () => {
+  showMissionCenterTab("overview");
+});
+
+missionTabFindings?.addEventListener("click", () => {
+  showMissionCenterTab("findings");
+});
+
+missionTabEvidence?.addEventListener("click", () => {
+  showMissionCenterTab("evidence");
+});
+
+missionTabPlan?.addEventListener("click", () => {
+  showMissionCenterTab("plan");
+});
+
+missionTabChat?.addEventListener("click", () => {
+  showMissionCenterTab("chat");
+});
+
 executionTabTerminal?.addEventListener("click", () => {
   showExecutionTab("terminal");
 });
@@ -2843,6 +2946,7 @@ async function bootstrap() {
   setupResizablePanes();
   setupGraphInteractions();
   applySessionPaneCollapsed(readSessionPaneCollapsed());
+  showMissionCenterTab("overview");
   setUnlocked(hasGateway);
   restoreExecutionWidth();
   showExecutionTab("terminal");
@@ -2854,8 +2958,11 @@ async function bootstrap() {
       await refreshSessionSummaries();
       await ensureAnthropicKeyConfigured({ showModal: true });
       await ensureGraphViewReady();
+      if (activeSessionMessages.length > 0) {
+        showMissionCenterTab("chat");
+      }
     } catch (error) {
-      setStatus(promptStatus, error.message || "Could not load session.", false);
+      setStatus(promptStatus, error.message || "Could not load mission.", false);
     }
   }
   renderSessionList();
