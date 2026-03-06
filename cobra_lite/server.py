@@ -66,6 +66,12 @@ ANTHROPIC_AUTH_INVALID_RE = re.compile(
     r"(invalid|incorrect|unauthorized|forbidden).*(x-api-key|api key)|authentication[_\s-]?error",
     re.IGNORECASE,
 )
+OVERVIEW_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+OVERVIEW_GENERIC_LINE_RE = re.compile(
+    r"^(?:perfect!?|great!?|excellent!?|let me|here(?:'s| is)|i(?:'ve| have) completed|task completed|run complete)\b",
+    re.IGNORECASE,
+)
+OVERVIEW_SEVERITY_HEADING_RE = re.compile(r"^(?:critical|high|medium|low|info)(?:\s+severity)?(?:\s*\(\d+\))?:?$", re.IGNORECASE)
 
 
 def _extract_graph_update_block(text: str) -> tuple[str, dict[str, Any] | None]:
@@ -167,6 +173,304 @@ def _extract_mission_overview_block(text: str) -> tuple[str, str | None]:
     overview = str(match.group(1) or "").strip()
     cleaned = MISSION_OVERVIEW_BLOCK_RE.sub("", raw, count=1).strip()
     return cleaned, overview or None
+
+
+def _sanitize_overview_line(value: str) -> str:
+    line = str(value or "").strip()
+    if not line:
+        return ""
+    line = re.sub(r"^[-*+]\s+", "", line)
+    line = re.sub(r"^\d+\.\s+", "", line)
+    line = re.sub(r"^#{1,6}\s*", "", line)
+    line = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)
+    line = re.sub(r"__([^_]+)__", r"\1", line)
+    line = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"\1", line)
+    line = re.sub(r"`([^`]*)`", r"\1", line)
+    line = re.sub(r"\s+", " ", line).strip(" -\t")
+    return line
+
+
+def _normalize_overview_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", _sanitize_overview_line(value).lower()).strip()
+
+
+def _overview_section_aliases() -> dict[str, tuple[str, ...]]:
+    return {
+        "summary": ("high level summary",),
+        "scope": ("scope", "objective", "focus"),
+        "current_state": ("current state", "status", "findings"),
+        "recommended_next_step": (
+            "recommended next step",
+            "recommended next steps",
+            "next step",
+            "next steps",
+            "immediate",
+            "short term",
+            "short-term",
+            "long term",
+            "long-term",
+        ),
+        "assurance": ("positive findings", "no critical issues found", "assurance"),
+    }
+
+
+def _is_standard_mission_overview(text: str) -> bool:
+    raw = str(text or "")
+    patterns = (
+        r"^##\s*High-Level Summary\s*$",
+        r"^##\s*Scope\s*$",
+        r"^##\s*Current State\s*$",
+        r"^##\s*Recommended Next Step\s*$",
+    )
+    return all(re.search(pattern, raw, re.IGNORECASE | re.MULTILINE) for pattern in patterns)
+
+
+def _looks_like_overview_heading(raw_line: str, cleaned_line: str) -> bool:
+    raw = str(raw_line or "").strip()
+    cleaned = _sanitize_overview_line(cleaned_line)
+    if not raw or not cleaned:
+        return False
+    normalized = _normalize_overview_key(cleaned)
+    if raw.lstrip().startswith("#"):
+        return True
+    if normalized in {alias for aliases in _overview_section_aliases().values() for alias in aliases}:
+        return True
+    if OVERVIEW_SEVERITY_HEADING_RE.match(cleaned):
+        return True
+    if cleaned.endswith(":") and len(cleaned) <= 44:
+        return True
+    return False
+
+
+def _should_skip_overview_line(value: str) -> bool:
+    line = _sanitize_overview_line(value)
+    if not line:
+        return True
+    key = _normalize_overview_key(line)
+    if not key:
+        return True
+    if key in {"task completed", "run complete", "actions taken", "tools used"}:
+        return True
+    if key in {alias for aliases in _overview_section_aliases().values() for alias in aliases}:
+        return True
+    if OVERVIEW_GENERIC_LINE_RE.match(line):
+        return True
+    if OVERVIEW_SEVERITY_HEADING_RE.match(line):
+        return True
+    if line.endswith(":") and len(line) <= 44:
+        return True
+    return False
+
+
+def _overview_candidate_lines(text: str, *, max_items: int = 6) -> list[str]:
+    candidates: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = _sanitize_overview_line(raw_line)
+        if not line:
+            continue
+        if _should_skip_overview_line(line):
+            continue
+        if len(line) < 18:
+            continue
+        candidates.append(line)
+        if len(candidates) >= max_items:
+            return candidates
+
+    collapsed = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not collapsed:
+        return candidates
+    for sentence in OVERVIEW_SENTENCE_SPLIT_RE.split(collapsed):
+        line = _sanitize_overview_line(sentence)
+        if not line or _should_skip_overview_line(line) or len(line) < 18:
+            continue
+        candidates.append(line.rstrip(" :;"))
+        if len(candidates) >= max_items:
+            break
+    return candidates
+
+
+def _dedupe_lines(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in lines:
+        line = _sanitize_overview_line(raw)
+        if not line:
+            continue
+        key = re.sub(r"[^a-z0-9]+", " ", line.lower()).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(line)
+    return out
+
+
+def _extract_overview_section_lines(
+    text: str,
+    section_name: str,
+    *,
+    max_items: int = 4,
+    stop_sections: tuple[str, ...] = (),
+    allow_nested_headings: bool = False,
+) -> list[str]:
+    aliases = _overview_section_aliases()
+    alias_keys = {_normalize_overview_key(value) for value in aliases.get(section_name, ())}
+    stop_keys = {_normalize_overview_key(value) for stop_name in stop_sections for value in aliases.get(stop_name, ())}
+    if not alias_keys:
+        return []
+
+    collected: list[str] = []
+    collecting = False
+    for raw_line in str(text or "").splitlines():
+        line = _sanitize_overview_line(raw_line)
+        if not line:
+            continue
+        key = _normalize_overview_key(line)
+        if key in alias_keys:
+            collecting = True
+            continue
+        if not collecting:
+            continue
+        if key in stop_keys:
+            break
+        if _looks_like_overview_heading(raw_line, line) and key not in alias_keys:
+            if allow_nested_headings:
+                continue
+            break
+        if _should_skip_overview_line(line):
+            continue
+        collected.append(line)
+        if len(collected) >= max_items:
+            break
+    return _dedupe_lines(collected)
+
+
+def _ensure_sentence(value: str) -> str:
+    text = str(value or "").strip().rstrip(";")
+    if not text:
+        return ""
+    if text[-1] not in ".!?":
+        text += "."
+    return text
+
+
+def _build_structured_mission_overview(existing_overview: str, prompt: str, final_text: str) -> str:
+    prompt_line = _sanitize_overview_line(prompt)
+    scope_lines = _dedupe_lines(
+        ([f"Mission: {prompt_line}"] if prompt_line else [])
+        + _extract_overview_section_lines(existing_overview, "scope", max_items=2)
+        + _extract_overview_section_lines(final_text, "scope", max_items=2, stop_sections=("current_state", "recommended_next_step"))
+    )
+    current_state_lines = _dedupe_lines(
+        _extract_overview_section_lines(
+            final_text,
+            "current_state",
+            max_items=4,
+            stop_sections=("recommended_next_step",),
+            allow_nested_headings=True,
+        )
+        + _extract_overview_section_lines(existing_overview, "current_state", max_items=3)
+    )
+    if not current_state_lines:
+        current_state_lines = _dedupe_lines(
+            _overview_candidate_lines(final_text, max_items=4) + _overview_candidate_lines(existing_overview, max_items=2)
+        )
+
+    next_step_lines = _dedupe_lines(
+        _extract_overview_section_lines(
+            final_text,
+            "recommended_next_step",
+            max_items=3,
+            stop_sections=("current_state", "scope", "assurance"),
+            allow_nested_headings=True,
+        )
+        + _extract_overview_section_lines(existing_overview, "recommended_next_step", max_items=3)
+    )
+    assurance_lines = _dedupe_lines(
+        _extract_overview_section_lines(
+            final_text,
+            "assurance",
+            max_items=2,
+            stop_sections=("recommended_next_step",),
+            allow_nested_headings=True,
+        )
+        + _extract_overview_section_lines(existing_overview, "assurance", max_items=2)
+    )
+
+    if not scope_lines and prompt_line:
+        scope_lines = [f"Mission: {prompt_line}"]
+    if not current_state_lines and prompt_line:
+        current_state_lines = [f"Mission is active for: {prompt_line}"]
+    if not next_step_lines:
+        next_step_lines = (
+            [f"Validate and prioritize the highest-signal item currently tracked: {current_state_lines[0]}"]
+            if current_state_lines
+            else ["Continue the mission and refresh this overview after the next completed run."]
+        )
+
+    summary_parts: list[str] = []
+    if prompt_line:
+        summary_parts.append(_ensure_sentence(f"Mission focus: {prompt_line}"))
+    if current_state_lines:
+        summary_parts.append(_ensure_sentence(f"Current state: {current_state_lines[0]}"))
+    if assurance_lines:
+        summary_parts.append(_ensure_sentence(f"Assurance: {assurance_lines[0]}"))
+
+    summary = " ".join(part for part in summary_parts if part).strip()
+    if not summary:
+        fallback_summary = _overview_candidate_lines(final_text, max_items=1) or _overview_candidate_lines(existing_overview, max_items=1)
+        summary = _ensure_sentence(fallback_summary[0] if fallback_summary else "Mission is active and awaiting more signal")
+
+    lines = [
+        "## High-Level Summary",
+        summary,
+        "",
+        "## Scope",
+        *[f"- {line}" for line in scope_lines[:3]],
+        "",
+        "## Current State",
+        *[f"- {line}" for line in current_state_lines[:4]],
+        "",
+        "## Recommended Next Step",
+        *[f"- {line}" for line in next_step_lines[:3]],
+    ]
+    return "\n".join(lines).strip()
+
+
+def _normalize_mission_overview(existing_overview: str, prompt: str, overview_text: str) -> str:
+    raw = str(overview_text or "").strip()
+    if not raw:
+        return ""
+    if _is_standard_mission_overview(raw):
+        return raw
+    return _build_structured_mission_overview(existing_overview, prompt, raw)
+
+
+def _latest_session_message(session: dict[str, Any], role: str) -> str:
+    messages = session.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    normalized_role = str(role or "").strip().lower()
+    for raw in reversed(messages):
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("role") or "").strip().lower() != normalized_role:
+            continue
+        text = str(raw.get("content") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _backfill_session_overview(session: dict[str, Any]) -> str:
+    existing_overview = str(session.get("overview") or "").strip()
+    if existing_overview and _is_standard_mission_overview(existing_overview):
+        return existing_overview
+    latest_user = _latest_session_message(session, "user")
+    latest_assistant = _latest_session_message(session, "assistant")
+    source_text = latest_assistant or existing_overview
+    if not source_text:
+        return ""
+    return _build_structured_mission_overview(existing_overview, latest_user, source_text)
 
 
 def create_app() -> Flask:
@@ -522,13 +826,23 @@ def create_app() -> Flask:
 
         return created
 
-    def _finalize_agent_result(session_id: str, result: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    def _finalize_agent_result(
+        session_id: str,
+        result: dict[str, Any],
+        *,
+        prompt_text: str,
+        existing_overview: str,
+    ) -> tuple[dict[str, Any], int]:
         final_text_raw = str(result.get("final_observation") or "Task completed.").strip()
         text_without_graph_block, graph_update = _extract_graph_update_block(final_text_raw)
         text_without_overview_block, mission_overview = _extract_mission_overview_block(text_without_graph_block)
         final_text, graph_suggestions = _extract_graph_suggestions(text_without_overview_block)
         created_graph_nodes = _apply_graph_updates(session_id, graph_update, graph_suggestions)
         result["final_observation"] = final_text
+        if not mission_overview:
+            mission_overview = _build_structured_mission_overview(existing_overview, prompt_text, final_text)
+        else:
+            mission_overview = _normalize_mission_overview(existing_overview, prompt_text, mission_overview)
 
         overview_session = (
             session_store.update_overview(session_id, mission_overview)
@@ -538,6 +852,18 @@ def create_app() -> Flask:
         result["mission_overview"] = str(overview_session.get("overview") or "")
         result["mission_overview_updated_at"] = overview_session.get("overview_updated_at")
         return result, created_graph_nodes
+
+    def _ensure_session_overview(session_id: str, session: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        current_session = session or session_store.get_session(session_id)
+        if not current_session:
+            return None
+        existing_overview = str(current_session.get("overview") or "").strip()
+        if existing_overview and _is_standard_mission_overview(existing_overview):
+            return current_session
+        synthesized = _backfill_session_overview(current_session)
+        if not synthesized:
+            return current_session
+        return session_store.update_overview(session_id, synthesized) or current_session
 
     def _resolve_session_id(payload: dict[str, Any]) -> str:
         requested = str(payload.get("session_id") or "").strip()
@@ -588,6 +914,7 @@ def create_app() -> Flask:
         session = session_store.get_session(session_id)
         if not session:
             return jsonify({"ok": False, "message": "Session not found."}), 404
+        session = _ensure_session_overview(session_id, session) or session
         session_store.set_last_session_id(session_id)
         return jsonify({"ok": True, "session": session})
 
@@ -712,7 +1039,7 @@ def create_app() -> Flask:
 
         session_id = _resolve_session_id(payload)
         session_store.append_message(session_id, "user", prompt)
-        current_session = session_store.get_session(session_id) or {}
+        current_session = _ensure_session_overview(session_id, session_store.get_session(session_id) or {}) or {}
         gateway_url = effective_gateway_url(state_store.get_gateway_url())
         anthropic_api_key = _resolve_anthropic_key()
         if not anthropic_api_key:
@@ -734,7 +1061,12 @@ def create_app() -> Flask:
                 mission_overview=str(current_session.get("overview") or ""),
                 cancel_event=cancel_event,
             )
-            result, created_graph_nodes = _finalize_agent_result(session_id, result)
+            result, created_graph_nodes = _finalize_agent_result(
+                session_id,
+                result,
+                prompt_text=prompt,
+                existing_overview=str(current_session.get("overview") or ""),
+            )
             session_store.append_message(session_id, "assistant", str(result.get("final_observation") or "Task completed."))
             return jsonify(
                 {
@@ -767,7 +1099,7 @@ def create_app() -> Flask:
 
         session_id = _resolve_session_id(payload)
         session_store.append_message(session_id, "user", prompt)
-        current_session = session_store.get_session(session_id) or {}
+        current_session = _ensure_session_overview(session_id, session_store.get_session(session_id) or {}) or {}
         gateway_url = effective_gateway_url(state_store.get_gateway_url())
         anthropic_api_key = _resolve_anthropic_key()
         if not anthropic_api_key:
@@ -800,7 +1132,12 @@ def create_app() -> Flask:
                     progress_callback=emit,
                     cancel_event=cancel_event,
                 )
-                result, created_graph_nodes = _finalize_agent_result(session_id, result)
+                result, created_graph_nodes = _finalize_agent_result(
+                    session_id,
+                    result,
+                    prompt_text=prompt,
+                    existing_overview=str(current_session.get("overview") or ""),
+                )
                 session_store.append_message(session_id, "assistant", str(result.get("final_observation") or "Task completed."))
                 if created_graph_nodes > 0:
                     emit({"type": "graph_updated", "data": {"created_nodes": created_graph_nodes}})

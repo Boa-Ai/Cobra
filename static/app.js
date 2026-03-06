@@ -366,6 +366,64 @@ function setMarkdownContent(node, value) {
   node.innerHTML = normalized ? renderMarkdown(normalized) : "";
 }
 
+function parseMissionOverviewSections(markdownText) {
+  const text = normalizeText(markdownText, "");
+  if (!text) return [];
+  const sections = [];
+  let current = null;
+  for (const rawLine of text.split("\n")) {
+    const headingMatch = rawLine.match(/^##\s+(.+?)\s*$/);
+    if (headingMatch) {
+      if (current) {
+        sections.push(current);
+      }
+      current = { title: normalizeText(headingMatch[1], "").trim(), lines: [] };
+      continue;
+    }
+    if (!current) {
+      return [];
+    }
+    current.lines.push(rawLine);
+  }
+  if (current) {
+    sections.push(current);
+  }
+  return sections.filter((section) => section.title);
+}
+
+function setMissionOverviewContent(node, value) {
+  if (!node) return;
+  const normalized = normalizeText(value, "");
+  node.dataset.rawMarkdown = normalized;
+  node.innerHTML = "";
+  if (!normalized) {
+    return;
+  }
+
+  const sections = parseMissionOverviewSections(normalized);
+  if (!sections.length) {
+    node.innerHTML = renderMarkdown(normalized);
+    return;
+  }
+
+  for (const [index, section] of sections.entries()) {
+    const card = document.createElement("section");
+    card.className = `mission-overview-section ${index === 0 ? "lead" : ""}`.trim();
+
+    const title = document.createElement("h4");
+    title.className = "mission-overview-section-title";
+    title.textContent = section.title;
+    card.appendChild(title);
+
+    const body = document.createElement("div");
+    body.className = "mission-overview-section-body markdown-content";
+    setMarkdownContent(body, normalizeText(section.lines.join("\n"), "_Not captured yet._"));
+    card.appendChild(body);
+
+    node.appendChild(card);
+  }
+}
+
 function resizePromptInput() {
   if (!promptInput) return;
   promptInput.style.height = "0px";
@@ -407,7 +465,7 @@ function renderMissionOverview() {
     const body = hasOverview
       ? activeSessionOverview
       : "_No overview yet._\n\nComplete a run and the agent will maintain a concise mission summary here.";
-    setMarkdownContent(missionOverviewContent, body);
+    setMissionOverviewContent(missionOverviewContent, body);
   }
   if (!missionOverviewStatus) return;
   if (!hasOverview) {
@@ -1898,6 +1956,9 @@ function setActiveSession(session) {
   }
   syncActiveMissionHeader(missionTitle);
   setMissionOverview(session?.overview, session?.overview_updated_at);
+  if (sessionId && messages.length > 0 && !normalizeText(session?.overview, "")) {
+    refreshMissionOverviewFromServer(sessionId).catch(() => {});
+  }
   renderSessionList();
   renderChatHistory(activeSessionMessages);
   syncMissionViewForActiveSession();
@@ -2107,6 +2168,20 @@ async function getSession(sessionId) {
     throw new Error("Invalid mission response.");
   }
   setActiveSession(payload.session);
+  return payload.session;
+}
+
+async function refreshMissionOverviewFromServer(sessionId) {
+  const missionId = normalizeText(sessionId, "");
+  if (!missionId) return null;
+  const payload = await fetchJson(`/api/sessions/${encodeURIComponent(missionId)}`);
+  if (!payload.session || typeof payload.session !== "object") {
+    throw new Error("Invalid mission response.");
+  }
+  if (normalizeText(payload.session.id, "") !== activeSessionId) {
+    return payload.session;
+  }
+  setMissionOverview(payload.session.overview, payload.session.overview_updated_at);
   return payload.session;
 }
 
@@ -2506,6 +2581,9 @@ function handleStreamEvent(type, data, run) {
       }
       if (data.result && typeof data.result === "object") {
         setMissionOverview(data.result.mission_overview, data.result.mission_overview_updated_at);
+        if (!normalizeText(data.result.mission_overview, "")) {
+          refreshMissionOverviewFromServer(data.session_id || activeSessionId).catch(() => {});
+        }
       }
       break;
     case "cancelled": {
