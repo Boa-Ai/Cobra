@@ -93,7 +93,7 @@
               <div class="mission-center-head">
                 <div class="mission-center-copy">
                   <h2>Mission Workspace</h2>
-                  <p>Switch between mission views. <code>Chat</code> is live; the others are staged.</p>
+                  </br>
                 </div>
                 <div class="mission-center-active">
                   <span class="mission-center-active-label">Active Mission</span>
@@ -110,36 +110,6 @@
                   aria-controls="mission-overview-view"
                 >
                   Overview
-                </button>
-                <button
-                  id="mission-tab-findings"
-                  class="mission-center-tab"
-                  type="button"
-                  role="tab"
-                  aria-selected="false"
-                  aria-controls="mission-findings-view"
-                >
-                  Findings
-                </button>
-                <button
-                  id="mission-tab-evidence"
-                  class="mission-center-tab"
-                  type="button"
-                  role="tab"
-                  aria-selected="false"
-                  aria-controls="mission-evidence-view"
-                >
-                  Evidence
-                </button>
-                <button
-                  id="mission-tab-plan"
-                  class="mission-center-tab"
-                  type="button"
-                  role="tab"
-                  aria-selected="false"
-                  aria-controls="mission-plan-view"
-                >
-                  Plan
                 </button>
                 <button
                   id="mission-tab-chat"
@@ -172,42 +142,6 @@
                   <p class="mission-overview-note">
                     The agent rewrites this structured mission brief after each completed run and it persists with the mission.
                   </p>
-                </div>
-              </section>
-              <section
-                id="mission-findings-view"
-                class="mission-center-view hidden"
-                role="tabpanel"
-                aria-labelledby="mission-tab-findings"
-              >
-                <div class="mission-placeholder-card">
-                  <span class="mission-placeholder-kicker">Findings</span>
-                  <h3>NOT IMPLEMENTED</h3>
-                  <p>This should become the mission finding register after we define finding objects and workflows.</p>
-                </div>
-              </section>
-              <section
-                id="mission-evidence-view"
-                class="mission-center-view hidden"
-                role="tabpanel"
-                aria-labelledby="mission-tab-evidence"
-              >
-                <div class="mission-placeholder-card">
-                  <span class="mission-placeholder-kicker">Evidence</span>
-                  <h3>NOT IMPLEMENTED</h3>
-                  <p>This should become the evidence timeline once artifacts and references have a dedicated schema.</p>
-                </div>
-              </section>
-              <section
-                id="mission-plan-view"
-                class="mission-center-view hidden"
-                role="tabpanel"
-                aria-labelledby="mission-tab-plan"
-              >
-                <div class="mission-placeholder-card">
-                  <span class="mission-placeholder-kicker">Plan</span>
-                  <h3>NOT IMPLEMENTED</h3>
-                  <p>This should become the operator plan once we define persistent planning state.</p>
                 </div>
               </section>
               <section
@@ -253,8 +187,7 @@
 
         <aside id="execution-pane" class="panel execution-pane {% if not has_gateway %}hidden{% endif %}">
           <div class="execution-header">
-            <h2>Activity</h2>
-            <div class="execution-tabs" role="tablist" aria-label="Activity view">
+            <div class="execution-tabs" role="tablist" aria-label="Activity pane views">
               <button
                 id="execution-tab-terminal"
                 class="execution-tab active"

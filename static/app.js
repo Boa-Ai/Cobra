@@ -9,17 +9,11 @@ const mainApp = document.getElementById("main-app");
 const composerDock = document.getElementById("composer-dock");
 const chatColumn = document.querySelector(".chat-column");
 const missionTabOverview = document.getElementById("mission-tab-overview");
-const missionTabFindings = document.getElementById("mission-tab-findings");
-const missionTabEvidence = document.getElementById("mission-tab-evidence");
-const missionTabPlan = document.getElementById("mission-tab-plan");
 const missionTabChat = document.getElementById("mission-tab-chat");
 const missionActiveTitle = document.getElementById("mission-active-title");
 const missionOverviewStatus = document.getElementById("mission-overview-status");
 const missionOverviewContent = document.getElementById("mission-overview-content");
 const missionOverviewView = document.getElementById("mission-overview-view");
-const missionFindingsView = document.getElementById("mission-findings-view");
-const missionEvidenceView = document.getElementById("mission-evidence-view");
-const missionPlanView = document.getElementById("mission-plan-view");
 const missionChatView = document.getElementById("mission-chat-view");
 const chatThread = document.getElementById("chat-thread");
 const sessionPane = document.getElementById("session-pane");
@@ -895,31 +889,19 @@ function showExecutionTab(tab) {
 }
 
 function showMissionCenterTab(tab) {
-  const normalized = ["overview", "findings", "evidence", "plan", "chat"].includes(tab) ? tab : "overview";
+  const normalized = ["overview", "chat"].includes(tab) ? tab : "overview";
   activeMissionCenterTab = normalized;
 
   const showOverview = normalized === "overview";
-  const showFindings = normalized === "findings";
-  const showEvidence = normalized === "evidence";
-  const showPlan = normalized === "plan";
   const showChat = normalized === "chat";
 
   missionOverviewView?.classList.toggle("hidden", !showOverview);
-  missionFindingsView?.classList.toggle("hidden", !showFindings);
-  missionEvidenceView?.classList.toggle("hidden", !showEvidence);
-  missionPlanView?.classList.toggle("hidden", !showPlan);
   missionChatView?.classList.toggle("hidden", !showChat);
 
   missionTabOverview?.classList.toggle("active", showOverview);
-  missionTabFindings?.classList.toggle("active", showFindings);
-  missionTabEvidence?.classList.toggle("active", showEvidence);
-  missionTabPlan?.classList.toggle("active", showPlan);
   missionTabChat?.classList.toggle("active", showChat);
 
   missionTabOverview?.setAttribute("aria-selected", showOverview ? "true" : "false");
-  missionTabFindings?.setAttribute("aria-selected", showFindings ? "true" : "false");
-  missionTabEvidence?.setAttribute("aria-selected", showEvidence ? "true" : "false");
-  missionTabPlan?.setAttribute("aria-selected", showPlan ? "true" : "false");
   missionTabChat?.setAttribute("aria-selected", showChat ? "true" : "false");
 }
 
@@ -2974,18 +2956,6 @@ promptInput?.addEventListener("input", resizePromptInput);
 
 missionTabOverview?.addEventListener("click", () => {
   showMissionCenterTab("overview");
-});
-
-missionTabFindings?.addEventListener("click", () => {
-  showMissionCenterTab("findings");
-});
-
-missionTabEvidence?.addEventListener("click", () => {
-  showMissionCenterTab("evidence");
-});
-
-missionTabPlan?.addEventListener("click", () => {
-  showMissionCenterTab("plan");
 });
 
 missionTabChat?.addEventListener("click", () => {
