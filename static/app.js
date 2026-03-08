@@ -9,12 +9,17 @@ const mainApp = document.getElementById("main-app");
 const composerDock = document.getElementById("composer-dock");
 const chatColumn = document.querySelector(".chat-column");
 const missionTabOverview = document.getElementById("mission-tab-overview");
-const missionTabChat = document.getElementById("mission-tab-chat");
+const missionTabReport = document.getElementById("mission-tab-report");
 const missionActiveTitle = document.getElementById("mission-active-title");
 const missionOverviewStatus = document.getElementById("mission-overview-status");
 const missionOverviewContent = document.getElementById("mission-overview-content");
 const missionOverviewView = document.getElementById("mission-overview-view");
-const missionChatView = document.getElementById("mission-chat-view");
+const missionReportView = document.getElementById("mission-report-view");
+const missionLoadingState = document.getElementById("mission-loading-state");
+const missionReportSummary = document.getElementById("mission-report-summary");
+const reportSeverityTableBody = document.getElementById("report-severity-table-body");
+const reportFindingsList = document.getElementById("report-findings-list");
+const downloadReportBtn = document.getElementById("download-report-btn");
 const chatThread = document.getElementById("chat-thread");
 const sessionPane = document.getElementById("session-pane");
 const sessionList = document.getElementById("session-list");
@@ -61,7 +66,8 @@ const keyInput = document.getElementById("api-key-input");
 const keyStatus = document.getElementById("key-status");
 
 const promptForm = document.getElementById("prompt-form");
-const promptInput = document.getElementById("prompt-input");
+const targetUrlInput = document.getElementById("target-url-input");
+const instructionsInput = document.getElementById("instructions-input");
 const promptStatus = document.getElementById("prompt-status");
 const promptSubmit = promptForm ? promptForm.querySelector(".prompt-submit") : null;
 
@@ -93,6 +99,7 @@ let activeSessionId = null;
 let activeSessionMessages = [];
 let activeSessionOverview = "";
 let activeSessionOverviewUpdatedAt = null;
+let hasSubmittedPrompt = false;
 let sessionSummaries = [];
 let anthropicConfigured = hasAnthropicKey;
 let sessionPaneCollapsed = false;
@@ -418,13 +425,227 @@ function setMissionOverviewContent(node, value) {
   }
 }
 
-function resizePromptInput() {
-  if (!promptInput) return;
-  promptInput.style.height = "0px";
+function stripMarkdownToText(value) {
+  return normalizeText(value, "")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildDetailedReportModel() {
+  const levels = ["P1", "P2", "P3", "P4", "P5"];
+  const sections = parseMissionOverviewSections(activeSessionOverview);
+  const summarySection = sections[0] || null;
+  const scopeSection = sections.find((section) => section.title.toLowerCase() === "scope") || null;
+  const stateSection = sections.find((section) => section.title.toLowerCase() === "current state") || null;
+  const findings = [];
+
+  if (stateSection) {
+    const items = normalizeText(stateSection.lines.join("\n"), "")
+      .split("\n")
+      .map((line) => line.replace(/^\s*[-*+]\s+/, "").trim())
+      .filter(Boolean)
+      .filter((line) => !/^no\s+(high-confidence\s+)?findings/i.test(line));
+
+    for (const item of items.slice(0, 6)) {
+      findings.push({
+        priority: "P3",
+        title: item.length > 72 ? `${item.slice(0, 69)}...` : item,
+        summary: item,
+        howFound:
+          "Placeholder report entry generated from the Mission Summary current-state section. Replace this logic with your preferred reporting pipeline.",
+      });
+    }
+  }
+
+  const counts = Object.fromEntries(levels.map((level) => [level, 0]));
+  for (const finding of findings) {
+    counts[finding.priority] = (counts[finding.priority] || 0) + 1;
+  }
+
+  return {
+    title: `${formatMissionTitle(missionActiveTitle?.textContent || "Mission")} Detailed Report`,
+    summary: summarySection ? stripMarkdownToText(summarySection.lines.join("\n")) : "No executive summary available yet.",
+    scope: scopeSection ? stripMarkdownToText(scopeSection.lines.join("\n")) : "Scope not captured yet.",
+    counts,
+    findings,
+    generatedAt: new Date().toLocaleString(),
+  };
+}
+
+function renderDetailedReport() {
+  const model = buildDetailedReportModel();
+  if (missionReportSummary) {
+    missionReportSummary.innerHTML = `
+      <div class="report-meta-row">
+        <div>
+          <div class="report-meta-label">Report Title</div>
+          <div class="report-meta-value">${escapeHtml(model.title)}</div>
+        </div>
+        <div>
+          <div class="report-meta-label">Generated</div>
+          <div class="report-meta-value">${escapeHtml(model.generatedAt)}</div>
+        </div>
+      </div>
+      <div class="report-summary-block">
+        <h4>Executive Summary</h4>
+        <p>${escapeHtml(model.summary)}</p>
+      </div>
+      <div class="report-summary-block">
+        <h4>Scope</h4>
+        <p>${escapeHtml(model.scope)}</p>
+      </div>
+    `;
+  }
+
+  if (reportSeverityTableBody) {
+    reportSeverityTableBody.innerHTML = ["P1", "P2", "P3", "P4", "P5"]
+      .map(
+        (level) => `
+          <tr>
+            <td>${level}</td>
+            <td>${Number(model.counts[level] || 0)}</td>
+          </tr>
+        `
+      )
+      .join("");
+  }
+
+  if (reportFindingsList) {
+    if (!model.findings.length) {
+      reportFindingsList.innerHTML = `
+        <div class="report-empty-state">
+          <h4>No vulnerabilities captured yet</h4>
+          <p>
+            This placeholder report is active. Edit the report-generation logic to map confirmed findings into P1-P5 entries.
+          </p>
+        </div>
+      `;
+      return;
+    }
+
+    reportFindingsList.innerHTML = model.findings
+      .map(
+        (finding, index) => `
+          <article class="report-finding-card">
+            <div class="report-finding-head">
+              <span class="report-priority">${escapeHtml(finding.priority)}</span>
+              <h4>${index + 1}. ${escapeHtml(finding.title)}</h4>
+            </div>
+            <div class="report-finding-grid">
+              <div>
+                <div class="report-meta-label">Summary</div>
+                <p>${escapeHtml(finding.summary)}</p>
+              </div>
+              <div>
+                <div class="report-meta-label">How We Found It</div>
+                <p>${escapeHtml(finding.howFound)}</p>
+              </div>
+            </div>
+          </article>
+        `
+      )
+      .join("");
+  }
+}
+
+function buildDetailedReportPrintHtml() {
+  const model = buildDetailedReportModel();
+  const rows = ["P1", "P2", "P3", "P4", "P5"]
+    .map(
+      (level) => `
+        <tr>
+          <td>${level}</td>
+          <td>${Number(model.counts[level] || 0)}</td>
+        </tr>
+      `
+    )
+    .join("");
+  const findingsHtml = model.findings.length
+    ? model.findings
+        .map(
+          (finding) => `
+            <section class="finding">
+              <h3>${escapeHtml(finding.priority)} · ${escapeHtml(finding.title)}</h3>
+              <p><strong>Summary:</strong> ${escapeHtml(finding.summary)}</p>
+              <p><strong>How we found it:</strong> ${escapeHtml(finding.howFound)}</p>
+            </section>
+          `
+        )
+        .join("")
+    : `<section class="finding"><h3>No vulnerabilities captured yet</h3><p>Edit the report-generation instructions to populate this template with confirmed findings.</p></section>`;
+
+  return `<!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <title>${escapeHtml(model.title)}</title>
+      <style>
+        @page { margin: 18mm; size: A4; }
+        body { font-family: Arial, sans-serif; color: #111; margin: 0; }
+        h1, h2, h3, h4 { margin: 0 0 10px; }
+        .meta { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+        .section { margin-bottom: 24px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        th, td { border: 1px solid #bbb; padding: 8px 10px; text-align: left; }
+        th { background: #f3f3f3; }
+        .finding { border: 1px solid #bbb; padding: 14px; margin-bottom: 14px; break-inside: avoid; }
+        .muted { color: #555; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <h1>${escapeHtml(model.title)}</h1>
+      <div class="meta">
+        <div><div class="muted">Generated</div><div>${escapeHtml(model.generatedAt)}</div></div>
+        <div><div class="muted">Scope</div><div>${escapeHtml(model.scope)}</div></div>
+      </div>
+      <section class="section">
+        <h2>Executive Summary</h2>
+        <p>${escapeHtml(model.summary)}</p>
+      </section>
+      <section class="section">
+        <h2>Priority Summary</h2>
+        <table>
+          <thead><tr><th>P1 - P5</th><th># of instances</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </section>
+      <section class="section">
+        <h2>Findings</h2>
+        ${findingsHtml}
+      </section>
+    </body>
+  </html>`;
+}
+
+function downloadDetailedReportPdf() {
+  const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1024,height=768");
+  if (!printWindow) return;
+  printWindow.document.open();
+  printWindow.document.write(buildDetailedReportPrintHtml());
+  printWindow.document.close();
+  printWindow.focus();
+  printWindow.print();
+}
+
+function resizeInstructionsInput() {
+  if (!instructionsInput) return;
+  instructionsInput.style.height = "0px";
   const maxHeight = 256;
-  const nextHeight = Math.min(promptInput.scrollHeight, maxHeight);
-  promptInput.style.height = `${Math.max(nextHeight, 44)}px`;
-  promptInput.style.overflowY = promptInput.scrollHeight > maxHeight ? "auto" : "hidden";
+  const nextHeight = Math.min(instructionsInput.scrollHeight, maxHeight);
+  instructionsInput.style.height = `${Math.max(nextHeight, 44)}px`;
+  instructionsInput.style.overflowY = instructionsInput.scrollHeight > maxHeight ? "auto" : "hidden";
+}
+
+function buildMissionPrompt(targetUrl, instructions) {
+  const url = normalizeText(targetUrl, "");
+  const extra = normalizeText(instructions, "");
+  if (!url) return "";
+  if (!extra) return `Assess the target at ${url}.`;
+  return `Assess the target at ${url}.\n\nAdditional instructions:\n${extra}`;
 }
 
 function setStatus(node, message, ok) {
@@ -453,17 +674,32 @@ function setMissionOverview(overview, updatedAt = null) {
   renderMissionOverview();
 }
 
+function syncMissionWorkspaceState() {
+  const hasOverview = activeSessionOverview.trim().length > 0;
+  const hasMissionActivity = activeSessionMessages.length > 0 || hasSubmittedPrompt;
+  const isPreSubmit = !hasOverview && !hasMissionActivity && !isRunning;
+  const waitingForOverview = !hasOverview && !isPreSubmit;
+  document.body.classList.toggle("mission-pre-submit", isPreSubmit);
+  document.body.classList.toggle("overview-ready", hasOverview);
+  document.body.classList.toggle("overview-pending", waitingForOverview);
+  if (!hasOverview) {
+    activeMissionCenterTab = "overview";
+  }
+  missionOverviewView?.classList.toggle("hidden", !hasOverview);
+  missionReportView?.classList.toggle("hidden", !hasOverview || activeMissionCenterTab !== "report");
+  missionLoadingState?.classList.toggle("hidden", !waitingForOverview);
+}
+
 function renderMissionOverview() {
   const hasOverview = activeSessionOverview.trim().length > 0;
   if (missionOverviewContent) {
-    const body = hasOverview
-      ? activeSessionOverview
-      : "_No overview yet._\n\nComplete a run and the agent will maintain a concise mission summary here.";
-    setMissionOverviewContent(missionOverviewContent, body);
+    setMissionOverviewContent(missionOverviewContent, hasOverview ? activeSessionOverview : "");
   }
+  renderDetailedReport();
+  syncMissionWorkspaceState();
   if (!missionOverviewStatus) return;
   if (!hasOverview) {
-    missionOverviewStatus.textContent = "Awaiting first run";
+    missionOverviewStatus.textContent = isRunning ? "Generating overview..." : "Awaiting first run";
     return;
   }
   const relative = activeSessionOverviewUpdatedAt ? formatRelativeTime(activeSessionOverviewUpdatedAt) : "";
@@ -678,9 +914,9 @@ function setupResizablePanes() {
 
 function setRunningState(running) {
   isRunning = running;
-  if (promptInput) {
-    promptInput.disabled = running;
-  }
+  document.body.classList.toggle("mission-running", running);
+  if (targetUrlInput) targetUrlInput.disabled = running;
+  if (instructionsInput) instructionsInput.disabled = running;
   if (promptSubmit) {
     promptSubmit.disabled = false;
     promptSubmit.classList.toggle("stop-mode", running);
@@ -699,6 +935,7 @@ function setRunningState(running) {
     activeRunStopRequested = false;
     activeRunMeta = null;
   }
+  renderMissionOverview();
 }
 
 async function requestStopActiveRun() {
@@ -889,33 +1126,20 @@ function showExecutionTab(tab) {
 }
 
 function showMissionCenterTab(tab) {
-  const normalized = ["overview", "chat"].includes(tab) ? tab : "overview";
+  const normalized = tab === "report" ? "report" : "overview";
   activeMissionCenterTab = normalized;
-
   const showOverview = normalized === "overview";
-  const showChat = normalized === "chat";
-
+  const showReport = normalized === "report";
   missionOverviewView?.classList.toggle("hidden", !showOverview);
-  missionChatView?.classList.toggle("hidden", !showChat);
-
+  missionReportView?.classList.toggle("hidden", !showReport);
   missionTabOverview?.classList.toggle("active", showOverview);
-  missionTabChat?.classList.toggle("active", showChat);
-
+  missionTabReport?.classList.toggle("active", showReport);
   missionTabOverview?.setAttribute("aria-selected", showOverview ? "true" : "false");
-  missionTabChat?.setAttribute("aria-selected", showChat ? "true" : "false");
+  missionTabReport?.setAttribute("aria-selected", showReport ? "true" : "false");
 }
 
 function syncMissionViewForActiveSession() {
-  const hasMessages = activeSessionMessages.length > 0;
-  if (activeMissionCenterTab === "chat") {
-    showMissionCenterTab("chat");
-    return;
-  }
-  if (hasMessages) {
-    showMissionCenterTab("chat");
-    return;
-  }
-  showMissionCenterTab("overview");
+  showMissionCenterTab(activeMissionCenterTab);
 }
 
 function isGraphTabActive() {
@@ -1916,6 +2140,7 @@ function setActiveSession(session) {
   }
   activeSessionId = sessionId || null;
   activeSessionMessages = messages;
+  hasSubmittedPrompt = messages.length > 0;
   writeStoredSessionId(activeSessionId);
   if (activeSessionId) {
     const existingIndex = sessionSummaries.findIndex((item) => item.id === activeSessionId);
@@ -2757,8 +2982,8 @@ keyForm?.addEventListener("submit", async (event) => {
     renderChatHistory(activeSessionMessages);
     setUnlocked(true);
     showMissionCenterTab(activeSessionMessages.length > 0 ? "chat" : "overview");
-    resizePromptInput();
-    promptInput?.focus();
+    resizeInstructionsInput();
+    targetUrlInput?.focus();
     scrollChatToBottom({ behavior: "smooth", force: true });
   } catch (error) {
     setStatus(keyStatus, error.message, false);
@@ -2785,7 +3010,7 @@ authForm?.addEventListener("submit", async (event) => {
     }
     closeAuthModal();
     setStatus(promptStatus, "Anthropic key saved. You can run prompts now.", true);
-    promptInput?.focus();
+    targetUrlInput?.focus();
   } catch (error) {
     setStatus(authStatus, error.message || "Could not save API key.", false);
   }
@@ -2798,12 +3023,13 @@ newSessionBtn?.addEventListener("click", async () => {
   }
   try {
     await createSession();
+    hasSubmittedPrompt = false;
     await refreshSessionSummaries();
     renderChatHistory(activeSessionMessages);
     showMissionCenterTab("overview");
     setStatus(promptStatus, "Started a new mission.", true);
     setSessionStatus("", true);
-    promptInput?.focus();
+    targetUrlInput?.focus();
     scrollChatToBottom({ behavior: "auto", force: true });
   } catch (error) {
     setSessionStatus(error.message || "Could not create a new mission.", false);
@@ -2816,9 +3042,11 @@ promptForm?.addEventListener("submit", async (event) => {
     await requestStopActiveRun();
     return;
   }
-  const prompt = promptInput.value.trim();
-  if (!prompt) {
-    setStatus(promptStatus, "Prompt cannot be empty.", false);
+  const targetUrl = normalizeText(targetUrlInput?.value, "");
+  const instructions = normalizeText(instructionsInput?.value, "");
+  const prompt = buildMissionPrompt(targetUrl, instructions);
+  if (!targetUrl) {
+    setStatus(promptStatus, "Target URL is required.", false);
     return;
   }
 
@@ -2840,6 +3068,8 @@ promptForm?.addEventListener("submit", async (event) => {
     setStatus(promptStatus, error.message || "Could not verify provider auth.", false);
     return;
   }
+  hasSubmittedPrompt = true;
+  syncMissionWorkspaceState();
   showMissionCenterTab("chat");
   const run = createRunUI(prompt);
 
@@ -2857,8 +3087,13 @@ promptForm?.addEventListener("submit", async (event) => {
   activeSessionMessages.push({ role: "user", content: prompt, ts: Date.now() });
   touchActiveSessionSummary("user", prompt);
 
-  promptInput.value = "";
-  resizePromptInput();
+  if (targetUrlInput) {
+    targetUrlInput.value = "";
+  }
+  if (instructionsInput) {
+    instructionsInput.value = "";
+  }
+  resizeInstructionsInput();
 
   activeRunAbortController = new AbortController();
   activeRunStopRequested = false;
@@ -2942,24 +3177,28 @@ promptForm?.addEventListener("submit", async (event) => {
       // Ignore sidebar refresh errors after prompt completion.
     }
     setRunningState(false);
-    promptInput?.focus();
+    targetUrlInput?.focus();
   }
 });
 
-promptInput?.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
+targetUrlInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
     event.preventDefault();
     promptForm?.requestSubmit();
   }
 });
-promptInput?.addEventListener("input", resizePromptInput);
+instructionsInput?.addEventListener("input", resizeInstructionsInput);
 
 missionTabOverview?.addEventListener("click", () => {
   showMissionCenterTab("overview");
 });
 
-missionTabChat?.addEventListener("click", () => {
-  showMissionCenterTab("chat");
+missionTabReport?.addEventListener("click", () => {
+  showMissionCenterTab("report");
+});
+
+downloadReportBtn?.addEventListener("click", () => {
+  downloadDetailedReportPdf();
 });
 
 executionTabTerminal?.addEventListener("click", () => {
@@ -3039,23 +3278,20 @@ async function bootstrap() {
       await refreshSessionSummaries();
       await ensureAnthropicKeyConfigured({ showModal: true });
       await ensureGraphViewReady();
-      if (activeSessionMessages.length > 0) {
-        showMissionCenterTab("chat");
-      }
     } catch (error) {
       setStatus(promptStatus, error.message || "Could not load mission.", false);
     }
   }
   renderSessionList();
   renderChatHistory(activeSessionMessages);
-  resizePromptInput();
+  resizeInstructionsInput();
   scrollChatToBottom({ behavior: "auto", force: true });
   ensureJumpLatestButton();
   updateAutoScrollEnabled();
   chatThread?.addEventListener("scroll", updateAutoScrollEnabled, { passive: true });
   const authModalVisible = !!authModal && !authModal.classList.contains("hidden");
   if (hasGateway && !authModalVisible) {
-    promptInput?.focus();
+    targetUrlInput?.focus();
   }
 }
 

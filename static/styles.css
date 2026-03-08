@@ -414,12 +414,50 @@ body.sessions-collapsed .session-fold-btn {
   gap: 0.75rem;
 }
 
+body.overview-pending .chat-column {
+  justify-content: center;
+}
+
+body.mission-pre-submit .chat-column {
+  justify-content: center;
+}
+
 .mission-center-shell {
   height: 100%;
   min-height: 0;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 0.75rem;
+}
+
+.mission-center-tabs {
+  display: none;
+  align-items: center;
+  gap: 0.8rem;
+  border-bottom: 1px solid rgba(44, 91, 66, 0.72);
+  padding-bottom: 0.2rem;
+}
+
+body.overview-ready .mission-center-tabs {
+  display: flex;
+}
+
+.mission-center-tab {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 0 0.55rem;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.84rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 2px solid transparent;
+}
+
+.mission-center-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
 }
 
 .token-panel,
@@ -439,6 +477,47 @@ body.sessions-collapsed .session-fold-btn {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+body.overview-pending .prompt-panel {
+  flex: 0 1 auto;
+  min-height: 22rem;
+}
+
+body.overview-pending .composer-dock {
+  width: min(52rem, 100%);
+  margin: 0 auto;
+}
+
+body.overview-pending .prompt-form {
+  max-width: 52rem;
+  margin: 0 auto;
+}
+
+body.mission-pre-submit .prompt-panel {
+  display: none;
+}
+
+body.mission-pre-submit .composer-dock {
+  width: min(52rem, 100%);
+  margin: 0 auto;
+}
+
+body.mission-pre-submit .prompt-form {
+  max-width: 52rem;
+  margin: 0 auto;
+}
+
+body.overview-ready .chat-column {
+  gap: 0;
+}
+
+body.overview-ready .prompt-panel {
+  flex: 1 1 auto;
+}
+
+body.overview-ready .composer-dock {
+  display: none;
 }
 
 .mission-center-head {
@@ -491,61 +570,67 @@ body.sessions-collapsed .session-fold-btn {
   color: var(--accent);
 }
 
-.mission-center-tabs {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0 0 0.2rem;
-  border-bottom: 1px solid rgba(44, 91, 66, 0.72);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.mission-center-tabs::-webkit-scrollbar {
-  display: none;
-}
-
-.mission-center-tab {
-  position: relative;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  padding: 0 0 0.6rem;
-  cursor: pointer;
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 0.88rem;
-  font-weight: 500;
-}
-
-.mission-center-tab::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -1px;
-  height: 2px;
-  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
-  transform: scaleX(0);
-  transform-origin: left;
-  transition: transform 0.16s ease;
-}
-
-.mission-center-tab:hover,
-.mission-center-tab:focus-visible {
-  color: var(--text);
-}
-
-.mission-center-tab.active {
-  color: var(--text);
-}
-
-.mission-center-tab.active::after {
-  transform: scaleX(1);
-}
-
 .mission-center-view {
   min-height: 0;
   height: 100%;
+}
+
+.mission-loading-state {
+  min-height: min(50vh, 26rem);
+  display: grid;
+  place-items: center;
+  gap: 1.4rem;
+  padding: 1.4rem;
+  text-align: center;
+}
+
+.mission-loading-orb {
+  position: relative;
+  width: 7rem;
+  height: 7rem;
+  display: grid;
+  place-items: center;
+}
+
+.mission-loading-orb span {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(122, 213, 71, 0.18);
+  box-shadow: 0 0 0 1px rgba(43, 200, 150, 0.05), inset 0 0 24px rgba(43, 200, 150, 0.08);
+  animation: mission-pulse 2.2s ease-in-out infinite;
+}
+
+.mission-loading-orb span:nth-child(2) {
+  inset: 0.75rem;
+  animation-delay: 0.25s;
+}
+
+.mission-loading-orb span:nth-child(3) {
+  inset: 1.5rem;
+  background:
+    radial-gradient(circle at 35% 35%, rgba(122, 213, 71, 0.85), rgba(43, 200, 150, 0.12) 55%, transparent 70%);
+  border-color: rgba(122, 213, 71, 0.3);
+  animation: mission-core 1.4s ease-in-out infinite;
+}
+
+.mission-loading-copy {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 34rem;
+  justify-items: center;
+}
+
+.mission-loading-copy h3 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.mission-loading-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  line-height: 1.6;
 }
 
 .mission-placeholder-card {
@@ -584,12 +669,6 @@ body.sessions-collapsed .session-fold-btn {
   line-height: 1.6;
 }
 
-#mission-chat-view {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
 .mission-overview-card {
   height: 100%;
   min-height: 18rem;
@@ -601,6 +680,138 @@ body.sessions-collapsed .session-fold-btn {
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 0.95rem;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.mission-report-card {
+  height: 100%;
+  min-height: 18rem;
+  border: 1px solid rgba(33, 63, 47, 0.95);
+  background: linear-gradient(180deg, rgba(8, 18, 13, 0.92), rgba(4, 10, 8, 0.98));
+  padding: 1.1rem 1.15rem;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.95rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.mission-report-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: start;
+}
+
+.mission-report-head h3 {
+  margin: 0.22rem 0 0;
+  font-size: 1.38rem;
+}
+
+.report-download-btn {
+  white-space: nowrap;
+}
+
+.mission-report-content {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 0.95rem;
+  padding-right: 0.12rem;
+}
+
+.mission-report-summary,
+.report-table-card,
+.report-finding-card,
+.report-empty-state {
+  border: 1px solid rgba(34, 63, 49, 0.92);
+  background: linear-gradient(180deg, rgba(10, 18, 14, 0.96), rgba(5, 11, 8, 0.98));
+  padding: 0.95rem 1rem;
+}
+
+.report-meta-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin-bottom: 0.9rem;
+}
+
+.report-meta-label {
+  margin-bottom: 0.38rem;
+  color: var(--accent);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.report-meta-value,
+.report-summary-block p,
+.report-finding-card p,
+.report-empty-state p {
+  margin: 0;
+  line-height: 1.65;
+}
+
+.report-summary-block + .report-summary-block {
+  margin-top: 0.9rem;
+}
+
+.report-summary-block h4,
+.report-table-card h4,
+.report-empty-state h4 {
+  margin: 0 0 0.7rem;
+  font-size: 1rem;
+}
+
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.report-table th,
+.report-table td {
+  border: 1px solid rgba(34, 63, 49, 0.92);
+  padding: 0.72rem 0.82rem;
+  text-align: left;
+}
+
+.report-table th {
+  color: var(--accent);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.report-findings-list {
+  display: grid;
+  gap: 0.95rem;
+}
+
+.report-finding-head {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 0.8rem;
+}
+
+.report-finding-head h4 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.report-priority {
+  padding: 0.2rem 0.45rem;
+  border: 1px solid rgba(122, 213, 71, 0.35);
+  color: var(--accent);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.report-finding-grid {
+  display: grid;
+  gap: 0.9rem;
 }
 
 .mission-overview-head {
@@ -710,88 +921,6 @@ body.sessions-collapsed .session-fold-btn {
   color: var(--accent);
 }
 
-.prompt-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  align-items: baseline;
-  margin-bottom: 0.6rem;
-}
-
-.prompt-header h2 {
-  margin: 0;
-  font-size: 1.24rem;
-  letter-spacing: 0.01em;
-}
-
-.prompt-header h3 {
-  margin: 0;
-  font-size: 1.14rem;
-  letter-spacing: 0.01em;
-}
-
-.prompt-header p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.88rem;
-}
-
-.chat-thread {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding-right: 0.3rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-}
-
-.chat-message {
-  display: flex;
-  flex-direction: column;
-  gap: 0.32rem;
-  max-width: 100%;
-}
-
-.chat-message.user {
-  align-items: flex-end;
-}
-
-.chat-message.assistant {
-  align-items: flex-start;
-}
-
-.chat-meta {
-  color: var(--muted);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.chat-bubble {
-  margin: 0;
-  width: fit-content;
-  max-width: min(46rem, 100%);
-  border: 1px solid var(--line-strong);
-  background: #07130e;
-  color: var(--text);
-  padding: 0.65rem 0.8rem;
-  border-radius: 0.82rem;
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 0.9rem;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.chat-message.user .chat-bubble {
-  border-color: rgba(122, 213, 71, 0.35);
-  background: rgba(19, 53, 34, 0.65);
-}
-
 .composer-dock {
   border: 1px solid var(--line);
   background: rgba(4, 6, 5, 0.92);
@@ -812,10 +941,9 @@ body.sessions-collapsed .session-fold-btn {
   border: 1px solid var(--line-strong);
   background: #07120d;
   border-radius: 0.9rem;
-  padding: 0.52rem 0.56rem;
-  display: flex;
-  gap: 0.7rem;
-  align-items: flex-end;
+  padding: 0.9rem;
+  display: grid;
+  gap: 0.9rem;
 }
 
 .prompt-composer:focus-within {
@@ -823,21 +951,51 @@ body.sessions-collapsed .session-fold-btn {
   box-shadow: 0 0 0 2px rgba(122, 213, 71, 0.24);
 }
 
-#prompt-input {
-  border: 0;
-  background: transparent;
-  padding: 0.2rem;
-  min-height: 2.8rem;
-  max-height: 15rem;
-  resize: none;
-  overflow-y: hidden;
+.prompt-field {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.prompt-label {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+#target-url-input,
+#instructions-input {
+  width: 100%;
+  border: 1px solid rgba(44, 91, 66, 0.9);
+  background: rgba(5, 12, 9, 0.92);
+  padding: 0.75rem 0.85rem;
   line-height: 1.4;
   color: var(--text);
   font-family: "IBM Plex Mono", monospace;
 }
 
-#prompt-input:focus {
+#target-url-input {
+  min-height: 3rem;
+}
+
+#instructions-input {
+  min-height: 8.5rem;
+  max-height: 15rem;
+  resize: none;
+  overflow-y: hidden;
+}
+
+#target-url-input:focus,
+#instructions-input:focus {
+  border-color: rgba(122, 213, 71, 0.66);
+  outline: none;
   box-shadow: none;
+}
+
+.prompt-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .prompt-submit {
@@ -856,6 +1014,64 @@ body.sessions-collapsed .session-fold-btn {
 .prompt-submit.stop-mode:focus-visible {
   filter: brightness(1.04);
   border-color: rgba(255, 122, 122, 0.95);
+}
+
+body.mission-running #target-url-input,
+body.mission-running #instructions-input,
+body.mission-running #prompt-status {
+  display: none;
+}
+
+body.mission-running .prompt-field,
+body.mission-running .prompt-label {
+  display: none;
+}
+
+body.mission-running .composer-dock {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+body.mission-running .prompt-form {
+  display: flex;
+  justify-content: center;
+}
+
+body.mission-running .prompt-composer {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  gap: 0;
+  width: auto;
+  justify-content: center;
+  min-height: 0;
+}
+
+@keyframes mission-pulse {
+  0%,
+  100% {
+    transform: scale(0.96);
+    opacity: 0.42;
+  }
+  50% {
+    transform: scale(1.04);
+    opacity: 1;
+  }
+}
+
+@keyframes mission-core {
+  0%,
+  100% {
+    transform: scale(0.92);
+    filter: brightness(0.95);
+  }
+  50% {
+    transform: scale(1.08);
+    filter: brightness(1.1);
+  }
 }
 
 .execution-pane {
@@ -1934,10 +2150,6 @@ textarea:focus {
     min-height: 18rem;
   }
 
-  .chat-thread {
-    max-height: 42vh;
-  }
-
   .execution-pane {
     grid-column: auto;
     grid-row: auto;
@@ -1970,19 +2182,21 @@ textarea:focus {
     grid-template-rows: minmax(9rem, var(--files-selector-height)) var(--pane-resizer-size) minmax(0, 1fr);
   }
 
-  .prompt-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.35rem;
-  }
-
   .mission-center-head {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .mission-center-tabs {
-    gap: 0.9rem;
+  body.mission-pre-submit .chat-column {
+    justify-content: center;
+  }
+
+  body.overview-pending .chat-column {
+    justify-content: flex-start;
+  }
+
+  body.overview-pending .prompt-panel {
+    min-height: 18rem;
   }
 
   .mission-center-active {

@@ -100,7 +100,7 @@
                   <div id="mission-active-title" class="mission-center-active-title">New Mission</div>
                 </div>
               </div>
-              <div class="mission-center-tabs" role="tablist" aria-label="Mission workspace views">
+              <div class="mission-center-tabs" role="tablist" aria-label="Mission views">
                 <button
                   id="mission-tab-overview"
                   class="mission-center-tab active"
@@ -112,65 +112,103 @@
                   Overview
                 </button>
                 <button
-                  id="mission-tab-chat"
+                  id="mission-tab-report"
                   class="mission-center-tab"
                   type="button"
                   role="tab"
                   aria-selected="false"
-                  aria-controls="mission-chat-view"
+                  aria-controls="mission-report-view"
                 >
-                  Chat
+                  Detailed Report
                 </button>
+              </div>
+              <div id="mission-loading-state" class="mission-loading-state" aria-live="polite">
+                <div class="mission-loading-orb" aria-hidden="true">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
+                <div class="mission-loading-copy">
+                  <span class="mission-placeholder-kicker">Preparing Overview</span>
+                  <h3>Mission summary incoming</h3>
+                  <p>
+                    Run the mission and the overview will appear here as soon as the first structured summary is available.
+                  </p>
+                </div>
               </div>
               <section
                 id="mission-overview-view"
                 class="mission-center-view"
-                role="tabpanel"
-                aria-labelledby="mission-tab-overview"
               >
                 <div class="mission-overview-card">
                   <div class="mission-overview-head">
                     <div>
                       <span class="mission-placeholder-kicker">Tracked Overview</span>
                       <h3>Mission Summary</h3>
-                    </div>
-                    <div id="mission-overview-status" class="mission-overview-status">Awaiting first run</div>
                   </div>
-                  <div id="mission-overview-content" class="mission-overview-content markdown-content">
-                    No mission overview yet.
-                  </div>
-                  <p class="mission-overview-note">
-                    The agent rewrites this structured mission brief after each completed run and it persists with the mission.
-                  </p>
+                  <div id="mission-overview-status" class="mission-overview-status">Awaiting first run</div>
+                </div>
+                  <div id="mission-overview-content" class="mission-overview-content markdown-content"></div>
                 </div>
               </section>
-              <section
-                id="mission-chat-view"
-                class="mission-center-view hidden"
-                role="tabpanel"
-                aria-labelledby="mission-tab-chat"
-              >
-                <div class="prompt-header">
-                  <h3>Chat</h3>
-                  <p>Mission messages and final AI answers appear here.</p>
+              <section id="mission-report-view" class="mission-center-view hidden">
+                <div class="mission-report-card">
+                  <div class="mission-report-head">
+                    <div>
+                      <span class="mission-placeholder-kicker">Detailed Report</span>
+                      <h3>Assessment Report</h3>
+                    </div>
+                    <button id="download-report-btn" class="ghost-btn report-download-btn" type="button">
+                      Download PDF
+                    </button>
+                  </div>
+                  <div id="mission-report-content" class="mission-report-content">
+                    <div id="mission-report-summary" class="mission-report-summary"></div>
+                    <div class="report-table-card">
+                      <h4>Priority Summary</h4>
+                      <table class="report-table">
+                        <thead>
+                          <tr>
+                            <th scope="col">Priority</th>
+                            <th scope="col"># of Instances</th>
+                          </tr>
+                        </thead>
+                        <tbody id="report-severity-table-body"></tbody>
+                      </table>
+                    </div>
+                    <div id="report-findings-list" class="report-findings-list"></div>
+                  </div>
                 </div>
-                <div id="chat-thread" class="chat-thread" aria-live="polite"></div>
               </section>
             </div>
           </section>
 
           <section id="composer-dock" class="composer-dock {% if not has_gateway %}hidden{% endif %}">
             <form id="prompt-form" class="prompt-form">
-              <label for="prompt-input" class="sr-only">Prompt</label>
               <div class="prompt-composer">
-                <textarea
-                  id="prompt-input"
-                  name="prompt"
-                  rows="1"
-                  placeholder="Describe your security testing task..."
-                  required
-                ></textarea>
-                <button class="cta-btn prompt-submit" type="submit">Send</button>
+                <div class="prompt-field">
+                  <label for="target-url-input" class="prompt-label">Target URL</label>
+                  <input
+                    id="target-url-input"
+                    name="target_url"
+                    type="url"
+                    inputmode="url"
+                    placeholder="https://target.example"
+                    required
+                  />
+                </div>
+                <div class="prompt-field">
+                  <label for="instructions-input" class="prompt-label">Additional Instructions</label>
+                  <textarea
+                    id="instructions-input"
+                    name="instructions"
+                    rows="4"
+                    placeholder="Optional notes, constraints, auth details, or areas to focus on"
+                  ></textarea>
+                </div>
+                <div class="prompt-actions">
+                  <button class="cta-btn prompt-submit" type="submit">Send</button>
+                </div>
               </div>
             </form>
             <p id="prompt-status" class="status-text" aria-live="polite"></p>
