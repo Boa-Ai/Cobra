@@ -15,13 +15,15 @@ from urllib.parse import urlparse
 
 from cobra_lite.config import (
     COBRA_ALLOW_NONSTREAM_FALLBACK,
-    CLI_ONLY_EXTRA_SYSTEM_PROMPT,
     COBRA_EXECUTION_MODE,
     COBRA_REQUIRE_LIVE_TELEMETRY,
     COBRA_REQUIRE_TERMINAL_ACTIONS,
     DIAGNOSTIC_EXEC_LINE_RE,
     GATEWAY_SCOPES,
+    MISSING_TOOL_RUNTIME_POLICY,
+    MISSING_TOOL_SECURITY_POLICY,
     OPENCLAW_AGENT_TIMEOUT_SECONDS,
+    OPENCLAW_WS_ACCEPTED_IDLE_SECONDS,
     OPENCLAW_DEVICE_AUTH_PATH,
     OPENCLAW_GATEWAY_URL,
     OPENCLAW_IDENTITY_PATH,
@@ -31,8 +33,8 @@ from cobra_lite.config import (
     OPENCLAW_SESSION_KEY,
     OPENCLAW_VERBOSE_LEVEL,
     REQUEST_TIMEOUT_SECONDS,
-    SECURITY_CONTEXT,
 )
+from cobra_lite.prompting import render_prompt
 
 MISSING_PROVIDER_KEY_RE = re.compile(r'No API key found for provider\s+"([^"]+)"', re.IGNORECASE)
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
@@ -301,47 +303,42 @@ def send_to_openclaw(
         return name == "browser" or name.startswith("web_")
 
     active_session_id = (session_id or OPENCLAW_SESSION_KEY or OPENCLAW_SESSION_ID).strip() or OPENCLAW_SESSION_ID
-    enforcement_suffix = ""
-    if COBRA_REQUIRE_TERMINAL_ACTIONS:
-        enforcement_suffix = (
-            "\n\nExecution contract:\n"
-            "- Execute at least one terminal command for this request before finalizing.\n"
-            "- Never claim a command was run unless it appears in tool output."
-        )
-    graph_memory = str(graph_context or "").strip()
-    graph_prompt_suffix = ""
-    if graph_memory:
-        graph_prompt_suffix = (
-            "\n\nMission graph memory (shared context across runs):\n"
-            f"{graph_memory}\n\n"
-            "Graph policy: only capture high-level, long-lived mission understanding (not individual shell commands). "
-            "When meaningful long-term understanding changes, append an optional hidden block at the end:\n"
-            "<graph_update>{\"nodes\":[{\"type\":\"Finding\",\"label\":\"Clear high-level title\",\"description\":\"Why this matters\",\"status\":\"new\",\"severity\":\"info\",\"confidence\":0.7}]}</graph_update>\n"
-            "Do not mention this block in prose. If nothing meaningful changed, omit the block."
-        )
-    overview_memory = str(mission_overview or "").strip()
-    overview_prompt_suffix = (
-        "\n\nPersistent mission overview (auto-maintained across runs):\n"
-        f"{overview_memory or 'No mission overview recorded yet.'}\n\n"
-        "Overview policy: you MUST end every completed run with exactly one hidden block containing the full "
-        "updated overview for the entire mission so far.\n"
-        "Use this exact structure inside the block and keep every section brief:\n"
-        "<mission_overview>\n"
-        "## High-Level Summary\n"
-        "One short paragraph.\n\n"
-        "## Scope\n"
-        "- Mission: target, scope, or user objective\n\n"
-        "## Current State\n"
-        "- High-signal mission status bullets only\n\n"
-        "## Recommended Next Step\n"
-        "- Immediate next action or remediation direction\n"
-        "</mission_overview>\n"
-        "This block replaces the previous overview. Preserve a clean visual hierarchy, avoid chatter, and do not mention the block in prose."
+    cli_only_extra_system_prompt = render_prompt(
+        "cli_only_extra_system_prompt.j2",
+        missing_tool_policy=MISSING_TOOL_RUNTIME_POLICY,
     )
-    _base_system_prefix = f"{SECURITY_CONTEXT}{graph_prompt_suffix}{overview_prompt_suffix}\n\n"
+    security_context = render_prompt(
+        "security_context.j2",
+        missing_tool_policy=MISSING_TOOL_SECURITY_POLICY,
+    )
+    enforcement_suffix = (
+        render_prompt("execution_contract.j2")
+        if COBRA_REQUIRE_TERMINAL_ACTIONS
+        else ""
+    )
+    graph_memory = str(graph_context or "").strip()
+    graph_prompt_suffix = (
+        render_prompt("graph_prompt_suffix.j2", graph_memory=graph_memory)
+        if graph_memory
+        else ""
+    )
+    overview_memory = str(mission_overview or "").strip()
+    overview_prompt_suffix = render_prompt(
+        "mission_overview_suffix.j2",
+        overview_memory=overview_memory or "No mission overview recorded yet.",
+    )
+    final_response_prompt_suffix = render_prompt("final_response_suffix.j2")
 
     def _build_prompt(user_text: str) -> str:
-        return f"{_base_system_prefix}{user_text}{enforcement_suffix}"
+        return render_prompt(
+            "agent_prompt.j2",
+            security_context=security_context,
+            graph_prompt_suffix=graph_prompt_suffix,
+            overview_prompt_suffix=overview_prompt_suffix,
+            final_response_prompt_suffix=final_response_prompt_suffix,
+            user_text=user_text,
+            enforcement_suffix=enforcement_suffix,
+        )
 
     configured_key = (anthropic_api_key or "").strip()
     if configured_key:
@@ -546,6 +543,9 @@ def send_to_openclaw(
             connect_sent = False
             agent_sent = False
             run_id: str | None = None
+            accepted_at: float | None = None
+            last_activity_at = time.time()
+            saw_post_accept_activity = False
             tool_counter = 0
             tool_steps: dict[str, int] = {}
             tool_commands: dict[str, str] = {}
@@ -586,9 +586,17 @@ def send_to_openclaw(
                 max_size=8_000_000,
                 open_timeout=REQUEST_TIMEOUT_SECONDS,
             ) as ws:
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "type": "run_status",
+                            "data": {"phase": "connected", "detail": f"Connected to gateway websocket at {ws_url}"},
+                        }
+                    )
                 recv_deadline = None
                 if OPENCLAW_AGENT_TIMEOUT_SECONDS > 0:
                     recv_deadline = time.time() + OPENCLAW_AGENT_TIMEOUT_SECONDS + 30
+                last_waiting_emit_at = 0.0
                 while True:
                     _raise_if_cancelled()
                     remaining = None
@@ -602,6 +610,27 @@ def send_to_openclaw(
                             recv_timeout = min(1.0, max(0.1, remaining))
                         raw = await asyncio.wait_for(ws.recv(), timeout=recv_timeout)
                     except asyncio.TimeoutError:
+                        if (
+                            accepted_at is not None
+                            and not saw_post_accept_activity
+                            and OPENCLAW_WS_ACCEPTED_IDLE_SECONDS > 0
+                            and (time.time() - max(accepted_at, last_activity_at)) >= OPENCLAW_WS_ACCEPTED_IDLE_SECONDS
+                        ):
+                            raise TimeoutError(
+                                "Gateway accepted the run but emitted no follow-up events over WebSocket. "
+                                "Falling back to another transport."
+                            )
+                        if progress_callback and (time.time() - last_waiting_emit_at) >= 10.0:
+                            progress_callback(
+                                {
+                                    "type": "run_status",
+                                    "data": {
+                                        "phase": "waiting",
+                                        "detail": "Connected, waiting for gateway events...",
+                                    },
+                                }
+                            )
+                            last_waiting_emit_at = time.time()
                         continue
                     msg = json.loads(raw)
                     frame_type = str(msg.get("type") or "").strip()
@@ -611,6 +640,13 @@ def send_to_openclaw(
                         payload = msg.get("payload") or {}
 
                         if event_name == "connect.challenge" and not connect_sent:
+                            if progress_callback:
+                                progress_callback(
+                                    {
+                                        "type": "run_status",
+                                        "data": {"phase": "authenticating", "detail": "Received gateway challenge; sending connect request."},
+                                    }
+                                )
                             nonce = str((payload or {}).get("nonce") or "")
                             params: dict[str, Any] = {
                                 "minProtocol": OPENCLAW_PROTOCOL_VERSION,
@@ -654,9 +690,12 @@ def send_to_openclaw(
                             continue
 
                         payload = payload if isinstance(payload, dict) else {}
+                        last_activity_at = time.time()
                         evt_run_id = str(payload.get("runId") or "")
                         if run_id and evt_run_id and evt_run_id != run_id:
                             continue
+                        if accepted_at is not None:
+                            saw_post_accept_activity = True
 
                         if event_name == "agent":
                             stream_name = str(payload.get("stream") or "").strip().lower()
@@ -791,6 +830,13 @@ def send_to_openclaw(
                         if not is_ok:
                             error_message = str(error_shape.get("message") or "connect failed").strip()
                             raise Exception(f"gateway connect failed: {error_message}")
+                        if progress_callback:
+                            progress_callback(
+                                {
+                                    "type": "run_status",
+                                    "data": {"phase": "session_patch", "detail": f"Gateway connected; patching session {active_session_id}."},
+                                }
+                            )
                         patch_params: dict[str, Any] = {
                             "key": active_session_id,
                             "verboseLevel": resolved_verbose_level,
@@ -808,6 +854,13 @@ def send_to_openclaw(
                         continue
 
                     if response_id == patch_request_id and not agent_sent:
+                        if progress_callback:
+                            progress_callback(
+                                {
+                                    "type": "run_status",
+                                    "data": {"phase": "agent_request", "detail": "Session ready; submitting agent request."},
+                                }
+                            )
                         agent_params: dict[str, Any] = {
                             "message": prompt_text,
                             "sessionId": active_session_id,
@@ -817,7 +870,7 @@ def send_to_openclaw(
                         if OPENCLAW_AGENT_TIMEOUT_SECONDS > 0:
                             agent_params["timeout"] = OPENCLAW_AGENT_TIMEOUT_SECONDS
                         if COBRA_EXECUTION_MODE in {"cli_only", "cli", "terminal_only"}:
-                            agent_params["extraSystemPrompt"] = CLI_ONLY_EXTRA_SYSTEM_PROMPT
+                            agent_params["extraSystemPrompt"] = cli_only_extra_system_prompt
                         await ws.send(
                             json.dumps(
                                 {
@@ -839,6 +892,18 @@ def send_to_openclaw(
                             accepted_run_id = str(payload.get("runId") or "").strip()
                             if accepted_run_id:
                                 run_id = accepted_run_id
+                            accepted_at = time.time()
+                            last_activity_at = accepted_at
+                            if progress_callback:
+                                progress_callback(
+                                    {
+                                        "type": "run_status",
+                                        "data": {
+                                            "phase": "accepted",
+                                            "detail": f"Agent run accepted{f' ({run_id})' if run_id else ''}; waiting for tool activity.",
+                                        },
+                                    }
+                                )
                             continue
                         flush_reasoning(force=True)
                         if COBRA_REQUIRE_TERMINAL_ACTIONS and tool_counter <= 0:
@@ -1334,15 +1399,27 @@ def send_to_openclaw(
                     "Live gateway telemetry is required, but the gateway run emitted no terminal actions. "
                     "Verify gateway run configuration, provider auth, and tool permissions, then retry."
                 )
-            if reason:
+            if "accepted the run but emitted no follow-up events" in reason_lc:
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "type": "run_status",
+                            "data": {
+                                "phase": "fallback",
+                                "detail": "WebSocket run stayed idle after acceptance; falling back to CLI transport.",
+                            },
+                        }
+                    )
+            elif reason:
                 raise Exception(
                     "Live gateway telemetry is required, but WebSocket transport is unavailable. "
                     f"{reason}. Configure gateway auth/connectivity and retry."
                 )
-            raise Exception(
-                "Live gateway telemetry is required, but WebSocket transport is unavailable. "
-                "Unknown websocket transport failure. Configure gateway auth/connectivity and retry."
-            )
+            elif not reason:
+                raise Exception(
+                    "Live gateway telemetry is required, but WebSocket transport is unavailable. "
+                    "Unknown websocket transport failure. Configure gateway auth/connectivity and retry."
+                )
 
         try:
             return _send_via_http(prompt_text)

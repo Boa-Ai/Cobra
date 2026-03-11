@@ -1,0 +1,15 @@
+{{ security_context }}
+
+{% if graph_prompt_suffix %}
+{{ graph_prompt_suffix }}
+
+{% endif %}
+{{ overview_prompt_suffix }}
+
+{{ final_response_prompt_suffix }}
+
+{{ user_text }}
+{% if enforcement_suffix %}
+
+{{ enforcement_suffix }}
+{% endif %}

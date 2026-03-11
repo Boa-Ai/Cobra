@@ -1,0 +1,7 @@
+Mission graph memory (shared context across runs):
+{{ graph_memory }}
+
+Graph policy: only capture high-level, long-lived mission understanding (not individual shell commands).
+When meaningful long-term understanding changes, append an optional hidden block at the end:
+<graph_update>{"nodes":[{"type":"Finding","label":"Clear high-level title","description":"Why this matters","status":"new","severity":"info","confidence":0.7}]}</graph_update>
+Do not mention this block in prose. If nothing meaningful changed, omit the block.

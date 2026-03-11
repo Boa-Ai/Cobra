@@ -1,224 +1,74 @@
+# Cobra
 
+Cobra is now a headless batch runner for OpenClaw.
 
-# Cobra Lite - An OpenClaw Hacking Copilot
-![Banner](static/images/GithubBannerV1.png)
+Flow:
 
+1. Configure `.env`
+2. Run `python app.py`
+3. Cobra reads the mission instructions from `.env`
+4. OpenClaw executes the mission
+5. The final report is written to `./data/final_report.md`
 
-[![Discord](https://img.shields.io/badge/Discord-7289DA?logo=discord&logoColor=white)](https://discord.gg/4jFrWk48XN)
-[![Linux_Supported](https://img.shields.io/badge/Linux-Supported-green?logo=linux&logoColor=white)](https://discord.gg/4jFrWk48XN)
-[![WSL_Supported](https://img.shields.io/badge/WSL-Supported-green?logo=wish&logoColor=white)](https://discord.gg/4jFrWk48XN)
+## Requirements
 
+- Python 3.11+
+- An OpenClaw gateway reachable at `OPENCLAW_GATEWAY_URL`
+- A valid `ANTHROPIC_API_KEY`
 
-A web-based security testing interface powered by **OpenClaw** - your AI-driven penetration testing assistant.
-
-## What It Does
-
-Cobra Lite provides a chat-style interface for security testing tasks, leveraging OpenClaw's powerful agent system which includes:
-
-- **Browser Automation** - Test web applications, forms, authentication flows, session handling
-- **Terminal Execution** - Run security tools like nmap, nuclei, nikto, ffuf, curl, and more
-- **Web Research** - Search for CVEs, exploits, and security documentation
-- **Multi-Agent Coordination** - Spawn sub-agents for different testing phases
-- **File Operations** - Generate reports, save findings, organize results
-
-
-![Cobra Lite demo screenshot](static/images/Demo_screenshot.png)
-
-## Quick Start
-
-### Prerequisites
-
-1. **OpenClaw Gateway** must be running. Install from:
-   ```bash
-   npm install -g openclaw
-   openclaw gateway start
-   ```
-   
-   Default gateway URL: `http://127.0.0.1:18789`
-
-### Installation
+## Setup
 
 ```bash
-# Clone or navigate to the project
-cd Cobra-Lite
-
-# Install dependencies
 python -m pip install -r requirements.txt
-
-# Run the app
-python app.py
+cp .env.example .env
 ```
 
-The app starts on `127.0.0.1:5001` by default. If that port is taken, it automatically uses the next free port.
-
-### Configuration
-
-Optional environment variables:
-
-```bash
-# Custom port
-PORT=7000 python app.py
-
-# Expose on network
-HOST=0.0.0.0 python app.py
-
-# Custom OpenClaw Gateway URL
-OPENCLAW_GATEWAY_URL=http://your-gateway:18789 python app.py
-
-# Disable auto-install (it is enabled by default)
-COBRA_AUTO_INSTALL_TOOLS=0 python app.py
-
-# Flask secret key (recommended for production)
-FLASK_SECRET_KEY="your-secret-key" python app.py
-```
-
-Or create a `.env` file:
+Update `.env`:
 
 ```env
-FLASK_SECRET_KEY=your-secret-key
+ANTHROPIC_API_KEY=your-anthropic-api-key
 OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
-PORT=5001
-HOST=127.0.0.1
-COBRA_AUTO_INSTALL_TOOLS=1
+COBRA_INSTRUCTIONS=Scan scanme.nmap.org for open ports and services and produce a concise final report.
 ```
 
-## Usage
+## Run
 
-1. **Connect to OpenClaw Gateway**
-   - On first load, enter your OpenClaw Gateway URL (default: `http://127.0.0.1:18789`)
-   - The app verifies connectivity and saves your settings
-
-2. **Start Testing**
-   - On first run, Cobra Lite will prompt for your Anthropic API key (`sk-ant-...`)
-   - Enter security testing prompts in natural language
-   - Examples:
-     ```
-     Scan example.com for open ports and services
-     
-     Test the login form at https://example.com/login for common vulnerabilities
-     
-     Find subdomains for example.com and check which are live
-     
-     Run a nuclei scan against example.com with default templates
-     ```
-
-3. **View Execution Details**
-   - Use the Execution pane tabs:
-     - Tools being executed
-     - Command outputs
-     - Real-time progress
-     - Mission graph memory (nodes + links + evidence)
-     - Workspace files
-   - Chat history is preserved across sessions
-
-4. **Settings**
-   - Click the ⚙️ icon to update your Gateway URL anytime
-
-## Features
-
-### Security Testing Capabilities
-
-Through OpenClaw, you get:
-
-- **Reconnaissance**: subdomain enumeration, port scanning, tech detection
-- **Vulnerability Testing**: XSS, SQLi, CSRF, authentication bypasses
-- **API Testing**: endpoint discovery, parameter fuzzing, auth testing
-- **Web App Testing**: form validation, session handling, cookie analysis
-- **Network Scanning**: service detection, banner grabbing
-- **Report Generation**: automated documentation of findings
-
-### Multi-Agent Architecture
-
-Cobra Lite can:
-- Spawn sub-agents for parallel testing
-- Coordinate different phases (recon → scanning → exploitation)
-- Aggregate results from multiple tools
-- Maintain conversation context across complex workflows
-
-### Mission Graph Memory
-
-Cobra Lite now maintains a per-session graph as shared mission memory:
-- **Graph tab**: interactive graph canvas (pan/zoom/drag) plus node inspector
-- **Curated structure**: nodes/edges are manually authored by the operator
-- **Persistent memory**: graph state is stored in `.claw_graph.json`
-- **Agent memory loop**: graph context is injected into agent prompts as read-only mission memory
-
-## Architecture
-
-```
-┌─────────────────────────┐
-│   Cobra Lite Web UI     │
-│   (Flask + JavaScript)  │
-└───────────┬─────────────┘
-            │ HTTP
-            ↓
-┌─────────────────────────┐
-│   OpenClaw Gateway      │
-│   (Agent Orchestration) │
-└───────────┬─────────────┘
-            │
-    ┌───────┴───────┐
-    ↓               ↓
-┌─────────┐   ┌─────────┐
-│ Browser │   │ Terminal│
-│  Tools  │   │  Tools  │
-└─────────┘   └─────────┘
-```
-## Troubleshooting
-
-### No Tools Available
-
-Auto-install is enabled by default. If it was disabled, re-enable it, or install tools manually on the system running OpenClaw Gateway:
 ```bash
-# Auto-install attempt mode (agent will try apt/dnf/yum/apk/pacman/brew when commands are missing)
-export COBRA_AUTO_INSTALL_TOOLS=1
 python app.py
 ```
 
-Manual install example:
-```bash
-# Example: Install common tools
-sudo apt update
-sudo apt install nmap curl nikto
-go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+On success, the report is written to:
+
+```text
+./data/final_report.md
 ```
 
-### Anthropic Key Missing
+## Optional Settings
 
-If the UI says an Anthropic key is required, open the key modal and save your `sk-ant-...` key.  
-Cobra Lite stores this key in local app state (`.claw_state.json`) and uses it for `openclaw agent` runs.
+`COBRA_INSTRUCTIONS_FILE`
+- Path to a text file containing the mission. If set, it is used instead of `COBRA_INSTRUCTIONS`.
 
+`COBRA_SESSION_ID`
+- Base prefix for the OpenClaw session ID. Each `python app.py` run gets a fresh session with a random suffix to avoid transcript carryover between missions.
 
-### Extending
+`DATA_DIR`
+- Output directory for runtime state and reports. Default: `./data`
 
-To add custom security workflows:
+`REPORT_FILE`
+- Final report path. Default: `./data/final_report.md`
 
-1. Modify `SECURITY_CONTEXT` in `cobra_lite/config.py` to guide the agent
-2. Add custom prompts or templates
-3. Integrate additional tools via OpenClaw skills
+`FINAL_RESPONSE_FILE`
+- Machine-readable JSON payload for your upstream server. Default: `./data/final_response.json`
 
-### API Integration
+`FINAL_RESPONSE_AUTH_TOKEN`
+- Auth token injected into `final_response.json` at write time.
 
-The app communicates with OpenClaw Gateway via:
-- `POST /api/chat` - Send messages and receive streaming responses
-- Tool calls and results are handled by OpenClaw automatically
+## Runtime Files
 
-## Security & Responsibility
+By default Cobra stores runtime artifacts under `./data`:
 
-⚠️ **Important**: This tool is for **authorized security testing only**.
-
-- Only test systems you own or have explicit permission to test
-- Respect bug bounty program rules and scope
-- Be aware of rate limits and avoid causing service disruption
-- Document all findings responsibly
-- Never use for malicious purposes
-
-
-## Contributing
-
-Built on top of OpenClaw. For issues or contributions:
-
-- OpenClaw: https://github.com/openclaw/openclaw
-- Cobra Lite: Create issues in this repo
-
-**Made with 🐍 by the OpenClaw community**
+- `final_report.md`
+- `final_response.json`
+- `state.json`
+- `sessions.json`
+- `graph.json`

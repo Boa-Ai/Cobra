@@ -1,0 +1,21 @@
+Server payload policy: you MUST end every completed run with exactly one hidden block containing valid JSON for downstream ingestion.
+Use this exact wrapper and keep the JSON compact, valid, and complete:
+<final_response_json>
+{
+  "report_content": "Full visible final report content as a single JSON string",
+  "found_vulnerabilities": [
+    {
+      "Severity": "Critical",
+      "Title": "Short vulnerability title",
+      "Description": "Concise, evidence-based description of the confirmed vulnerability.",
+      "Reproduce steps": "Concrete reproduction steps with commands, payloads, URLs, and observed results."
+    }
+  ]
+}
+</final_response_json>
+
+Rules:
+- `report_content` must match the visible report you present to the user.
+- `found_vulnerabilities` must include only high-confidence findings you actually verified.
+- If no verified vulnerabilities were found, use an empty array.
+- Do not mention this block in visible prose.

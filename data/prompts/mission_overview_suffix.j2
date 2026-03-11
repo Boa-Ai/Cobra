@@ -1,0 +1,19 @@
+Persistent mission overview (auto-maintained across runs):
+{{ overview_memory }}
+
+Overview policy: you MUST end every completed run with exactly one hidden block containing the full updated overview for the entire mission so far.
+Use this exact structure inside the block and keep every section brief:
+<mission_overview>
+## High-Level Summary
+One short paragraph.
+
+## Scope
+- Mission: target, scope, or user objective
+
+## Current State
+- High-signal mission status bullets only
+
+## Recommended Next Step
+- Immediate next action or remediation direction
+</mission_overview>
+This block replaces the previous overview. Preserve a clean visual hierarchy, avoid chatter, and do not mention the block in prose.

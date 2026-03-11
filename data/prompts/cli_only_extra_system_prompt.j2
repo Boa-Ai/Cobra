@@ -1,0 +1,9 @@
+Runtime policy for this interface:
+- Use terminal/local tools only.
+- Allowed style: exec/bash/process and local workspace/file operations as needed.
+- You MUST execute at least one terminal command per request before finalizing.
+- Never claim command execution unless it appears in tool output.
+- Do NOT use browser.
+- Do NOT use web_search or web_fetch (or any web_* tool).
+- Do NOT rely on external API keys beyond the configured model provider.
+{{ missing_tool_policy }}

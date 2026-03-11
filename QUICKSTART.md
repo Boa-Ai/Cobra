@@ -1,126 +1,23 @@
-# Cobra Lite - Quick Start
-
-## 3-Step Setup
-
-### 1. Start Gateway
+# Quick Start
 
 ```bash
-# Install gateway CLI (if not already installed)
 npm install -g openclaw
-
-# Start the gateway
 openclaw gateway start
-```
-
-✅ Gateway should be running at `http://127.0.0.1:18789`
-
-### 2. Install Cobra Lite
-
-```bash
-cd /home/willi/Boa-Ai/claw-bot-pentester
-pip install -r requirements.txt
-```
-
-### 3. Launch Cobra Lite
-
-```bash
-# Optional (default): enforce CLI-only tool policy
-export COBRA_EXECUTION_MODE=cli_only
-# Optional: disable auto-install attempts for missing tools
-export COBRA_AUTO_INSTALL_TOOLS=0
-
+python -m pip install -r requirements.txt
+cp .env.example .env
 python app.py
 ```
 
-🎉 **That's it!** Open your browser to the URL shown (usually `http://127.0.0.1:5001`)
+Minimum `.env`:
 
-## First Test
-
-Try this prompt in the Cobra Lite interface:
-
-```
-Scan scanme.nmap.org for open ports and services
+```env
+ANTHROPIC_API_KEY=your-anthropic-api-key
+OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
+COBRA_INSTRUCTIONS=Scan scanme.nmap.org for open ports and services and produce a concise final report.
 ```
 
-Or for web application testing:
+Output:
 
+```text
+./data/final_report.md
 ```
-Test the demo site at https://demo.testfire.net for common vulnerabilities
-```
-
-## Common Commands
-
-| Task | Command |
-|------|---------|
-| Start gateway | `openclaw gateway start` |
-| Check gateway status | `openclaw gateway status` |
-| Stop gateway | `openclaw gateway stop` |
-| Run Cobra Lite | `python app.py` |
-| Custom port | `PORT=8000 python app.py` |
-
-## Troubleshooting
-
-### "Cannot reach gateway"
-```bash
-openclaw gateway status
-openclaw gateway start
-```
-
-### "Port already in use"
-App auto-selects next available port. Check startup message.
-
-### "Anthropic API key is required"
-Use the in-app prompt to save your `sk-ant-...` key, then resend the prompt.
-
-### No security tools available
-Auto-install attempts are enabled by default. If needed, re-enable them, or install tools manually on the same system running the gateway:
-```bash
-export COBRA_AUTO_INSTALL_TOOLS=1
-python app.py
-```
-
-Manual install:
-```bash
-# Ubuntu/Debian
-sudo apt install nmap curl nikto
-
-# Install nuclei
-go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-```
-
-## Example Tests
-
-### 1. Basic Recon
-```
-Find subdomains for example.com and check which are live
-```
-
-### 2. Port Scan
-```
-Scan example.com ports 1-10000 and identify services
-```
-
-### 3. Web App Test
-```
-Test https://example.com/login for:
-- XSS
-- SQL injection
-- CSRF
-- Weak passwords
-```
-
-### 4. API Security
-```
-Discover and test all endpoints at https://api.example.com/v1
-```
-
-## Pro Tips
-
-1. **Context Matters** - Cobra Lite stores conversation sessions. Build on previous results in the same session.
-2. **Be Specific** - More detail = better results
-3. **Tool Selection** - Mention specific tools if you prefer them (nmap, nuclei, etc.)
-4. **Sub-Agents** - Ask Cobra Lite to "spawn an agent for X" for parallel work
-
----
-
-Start chatting with Cobra Lite.

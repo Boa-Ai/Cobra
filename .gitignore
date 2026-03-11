@@ -23,19 +23,14 @@ wheels/
 .installed.cfg
 *.egg
 
-# Flask
-instance/
-.webassets-cache
-
 # Environment
 .env
 .venv
 
-# State files
-.claw_state.json
-.cobra_state.json
-.claw_sessions.json
-.claw_graph.json
+# Runtime output
+data/*
+!data/prompts/
+!data/prompts/*.j2
 
 # IDE
 .vscode/
