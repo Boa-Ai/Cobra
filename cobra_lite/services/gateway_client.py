@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 from cobra_lite.config import (
     COBRA_ALLOW_NONSTREAM_FALLBACK,
     COBRA_EXECUTION_MODE,
+    COBRA_GATEWAY_WARMUP_RETRIES,
+    COBRA_GATEWAY_WARMUP_RETRY_SECONDS,
     COBRA_REQUIRE_LIVE_TELEMETRY,
     COBRA_REQUIRE_TERMINAL_ACTIONS,
     DIAGNOSTIC_EXEC_LINE_RE,
@@ -919,17 +921,28 @@ def send_to_openclaw(
     def _send_via_cli(prompt_text: str) -> dict[str, Any]:
         execution_id = "gateway-agent-cli"
         verbose_switch = "off" if OPENCLAW_VERBOSE_LEVEL.strip().lower() in {"off", "none", "0", "false"} else "on"
+        parsed_gateway_url = urlparse(gateway_url if "://" in gateway_url else f"http://{gateway_url}")
+        use_local_cli = (
+            (COBRA_ALLOW_NONSTREAM_FALLBACK or not COBRA_REQUIRE_LIVE_TELEMETRY)
+            and (parsed_gateway_url.hostname or "").strip().lower() in {"127.0.0.1", "localhost", "::1"}
+        )
         command = [
             "openclaw",
             "agent",
-            "--session-id",
-            active_session_id,
-            "--message",
-            prompt_text,
-            "--json",
-            "--verbose",
-            verbose_switch,
         ]
+        if use_local_cli:
+            command.append("--local")
+        command.extend(
+            [
+                "--session-id",
+                active_session_id,
+                "--message",
+                prompt_text,
+                "--json",
+                "--verbose",
+                verbose_switch,
+            ]
+        )
         if OPENCLAW_AGENT_TIMEOUT_SECONDS > 0:
             command.extend(["--timeout", str(OPENCLAW_AGENT_TIMEOUT_SECONDS)])
         if shutil.which("stdbuf"):
@@ -939,6 +952,7 @@ def send_to_openclaw(
         )
         command_text = (
             "openclaw agent "
+            f"{'--local ' if use_local_cli else ''}"
             f"--session-id {active_session_id} "
             "--message <omitted> "
             "--json "
@@ -1369,6 +1383,13 @@ def send_to_openclaw(
         errors: list[str] = []
         ws_failure_message = ""
 
+        def _is_terminal_telemetry_missing(reason: str) -> bool:
+            reason_lc = str(reason or "").strip().lower()
+            return (
+                "no terminal actions were emitted by the gateway run" in reason_lc
+                or "emitted no terminal actions" in reason_lc
+            )
+
         try:
             return _send_via_gateway_ws(prompt_text)
         except Exception as ws_error:
@@ -1391,10 +1412,41 @@ def send_to_openclaw(
                     ws_failure_message = str(ws_retry_error)
                     errors.append(f"ws-retry: {ws_failure_message}")
 
+        if (
+            COBRA_REQUIRE_LIVE_TELEMETRY
+            and not COBRA_ALLOW_NONSTREAM_FALLBACK
+            and _is_terminal_telemetry_missing(ws_failure_message)
+            and COBRA_GATEWAY_WARMUP_RETRIES > 0
+        ):
+            for retry_index in range(1, COBRA_GATEWAY_WARMUP_RETRIES + 1):
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "type": "run_status",
+                            "data": {
+                                "phase": "warmup_retry",
+                                "detail": (
+                                    "Gateway emitted no terminal telemetry on the initial run; "
+                                    f"retrying websocket execution ({retry_index}/{COBRA_GATEWAY_WARMUP_RETRIES})."
+                                ),
+                            },
+                        }
+                    )
+                time.sleep(COBRA_GATEWAY_WARMUP_RETRY_SECONDS)
+                try:
+                    return _send_via_gateway_ws(prompt_text)
+                except Exception as ws_warmup_error:
+                    if isinstance(ws_warmup_error, (_PolicyViolationError, RunCancelledError)):
+                        raise
+                    ws_failure_message = str(ws_warmup_error)
+                    errors.append(f"ws-warmup-{retry_index}: {ws_failure_message}")
+                    if not _is_terminal_telemetry_missing(ws_failure_message):
+                        break
+
         if COBRA_REQUIRE_LIVE_TELEMETRY and not COBRA_ALLOW_NONSTREAM_FALLBACK:
             reason = (ws_failure_message or "").strip()
             reason_lc = reason.lower()
-            if "no terminal actions were emitted by the gateway run" in reason_lc:
+            if _is_terminal_telemetry_missing(reason_lc):
                 raise Exception(
                     "Live gateway telemetry is required, but the gateway run emitted no terminal actions. "
                     "Verify gateway run configuration, provider auth, and tool permissions, then retry."
