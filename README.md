@@ -6,7 +6,7 @@ Flow:
 
 1. Configure `.env`
 2. Run `python app.py`
-3. Cobra reads the mission instructions from `.env`
+3. Cobra reads the allowed target scope and mission instructions from `.env`
 4. OpenClaw executes the mission
 5. The final report is written to `./data/final_report.md`
 
@@ -28,6 +28,7 @@ Update `.env`:
 ```env
 ANTHROPIC_API_KEY=your-anthropic-api-key
 OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
+TARGET_SCOPE=scanme.nmap.org
 COBRA_INSTRUCTIONS=Scan scanme.nmap.org for open ports and services and produce a concise final report.
 ```
 
@@ -47,6 +48,9 @@ On success, the report is written to:
 
 `COBRA_INSTRUCTIONS_FILE`
 - Path to a text file containing the mission. If set, it is used instead of `COBRA_INSTRUCTIONS`.
+
+`TARGET_SCOPE`
+- Allowed target scope provided to the pentesting model. Use a hostname, URL host, IP, CIDR, or comma-separated list.
 
 `COBRA_SESSION_ID`
 - Base prefix for the OpenClaw session ID. Each `python app.py` run gets a fresh session with a random suffix to avoid transcript carryover between missions.

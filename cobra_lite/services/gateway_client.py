@@ -35,6 +35,7 @@ from cobra_lite.config import (
     OPENCLAW_SESSION_KEY,
     OPENCLAW_VERBOSE_LEVEL,
     REQUEST_TIMEOUT_SECONDS,
+    TARGET_SCOPE,
 )
 from cobra_lite.prompting import render_prompt
 
@@ -312,6 +313,7 @@ def send_to_openclaw(
     security_context = render_prompt(
         "security_context.j2",
         missing_tool_policy=MISSING_TOOL_SECURITY_POLICY,
+        target_scope=TARGET_SCOPE or "UNSET",
     )
     enforcement_suffix = (
         render_prompt("execution_contract.j2")

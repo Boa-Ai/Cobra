@@ -13,6 +13,7 @@ Minimum `.env`:
 ```env
 ANTHROPIC_API_KEY=your-anthropic-api-key
 OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
+TARGET_SCOPE=scanme.nmap.org
 COBRA_INSTRUCTIONS=Scan scanme.nmap.org for open ports and services and produce a concise final report.
 ```
 
