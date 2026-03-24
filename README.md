@@ -56,7 +56,7 @@ If the model determines the supplied instructions violate the illegal prompt fil
 - Path to a text file containing the mission. If set, it is used instead of `COBRA_INSTRUCTIONS`.
 
 `TARGET_SCOPE`
-- Allowed target scope provided to the pentesting model. Use a hostname, URL host, IP, CIDR, or comma-separated list.
+- Allowed target scope provided to the pentesting model. Use a hostname, URL host, IP, CIDR, comma-separated list, or a fuller human-readable scope contract.
 
 `COBRA_SESSION_ID`
 - Base prefix for the OpenClaw session ID. Each `python app.py` run gets a fresh session with a random suffix to avoid transcript carryover between missions.
