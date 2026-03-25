@@ -48,6 +48,7 @@ DATA_DIR = env_path("DATA_DIR", BASE_DIR / "data")
 PROMPTS_DIR = env_path("PROMPTS_DIR", DATA_DIR / "prompts")
 REPORT_FILE = env_path("REPORT_FILE", DATA_DIR / "final_report.md")
 FINAL_RESPONSE_FILE = env_path("FINAL_RESPONSE_FILE", DATA_DIR / "final_response.json")
+INCIDENT_FILE = env_path("INCIDENT_FILE", DATA_DIR / "incident.md")
 
 STATE_FILE = env_path("STATE_FILE", DATA_DIR / "state.json")
 SESSIONS_FILE = env_path("SESSIONS_FILE", DATA_DIR / "sessions.json")

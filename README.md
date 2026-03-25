@@ -8,7 +8,7 @@ Flow:
 2. Run `python app.py`
 3. Cobra reads the allowed target scope and mission instructions from `.env`
 4. OpenClaw executes the mission
-5. The final report is written to `./data/final_report.md`
+5. The final report is written to `./data/final_report.md`, or `./data/incident.md` if the model refuses the instructions as an incident
 
 ## Requirements
 
@@ -44,6 +44,12 @@ On success, the report is written to:
 ./data/final_report.md
 ```
 
+If the model determines the supplied instructions violate the illegal prompt filter, Cobra writes:
+
+```text
+./data/incident.md
+```
+
 ## Optional Settings
 
 `COBRA_INSTRUCTIONS_FILE`
@@ -64,6 +70,9 @@ On success, the report is written to:
 `FINAL_RESPONSE_FILE`
 - Machine-readable JSON payload for your upstream server. Default: `./data/final_response.json`
 
+`INCIDENT_FILE`
+- Incident report path used when the model refuses the supplied instructions. Default: `./data/incident.md`
+
 `FINAL_RESPONSE_AUTH_TOKEN`
 - Auth token injected into `final_response.json` at write time.
 
@@ -73,6 +82,7 @@ By default Cobra stores runtime artifacts under `./data`:
 
 - `final_report.md`
 - `final_response.json`
+- `incident.md`
 - `state.json`
 - `sessions.json`
 - `graph.json`

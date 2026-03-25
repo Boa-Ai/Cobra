@@ -397,6 +397,22 @@ def send_to_openclaw(
         normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
         return normalized
 
+    def _looks_like_incident_text(text: str) -> bool:
+        normalized = _clean_final_observation(text).lower()
+        if not normalized:
+            return False
+        markers = (
+            "<incident_report_json>",
+            "# incident report",
+            "incident report",
+            "illegal prompt filter",
+            "out-of-scope target",
+            "out-of-scope targeting",
+            "disallowed security actions",
+            "request denied",
+        )
+        return any(marker in normalized for marker in markers)
+
     def _collect_payload_texts(payload_obj: dict[str, Any]) -> list[str]:
         texts: list[str] = []
 
@@ -907,15 +923,15 @@ def send_to_openclaw(
                                             "detail": f"Agent run accepted{f' ({run_id})' if run_id else ''}; waiting for tool activity.",
                                         },
                                     }
-                                )
+                            )
                             continue
                         flush_reasoning(force=True)
-                        if COBRA_REQUIRE_TERMINAL_ACTIONS and tool_counter <= 0:
+                        final_observation = _extract_final_observation(payload, fallback_text=latest_assistant_text)
+                        if COBRA_REQUIRE_TERMINAL_ACTIONS and tool_counter <= 0 and not _looks_like_incident_text(final_observation):
                             raise Exception(
                                 "No terminal actions were emitted by the gateway run. "
                                 "Cobra Lite requires visible command execution telemetry."
                             )
-                        final_observation = _extract_final_observation(payload, fallback_text=latest_assistant_text)
                         return {"final_observation": final_observation}
 
         return asyncio.run(_run())

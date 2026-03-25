@@ -22,3 +22,5 @@ Output:
 ```text
 ./data/final_report.md
 ```
+
+If the model refuses the instructions as an incident, Cobra writes `./data/incident.md` instead of the normal pentest artifacts.

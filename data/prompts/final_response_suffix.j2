@@ -1,5 +1,5 @@
-Server payload policy: you MUST end every completed run with exactly one hidden block containing valid JSON for downstream ingestion.
-Use this exact wrapper and keep the JSON compact, valid, and complete:
+Completion payload policy:
+- For a normal pentest completion, you MUST end the run with exactly one hidden block using this wrapper:
 <final_response_json>
 {
   "report_content": "Full visible final report content as a single JSON string",
@@ -13,9 +13,20 @@ Use this exact wrapper and keep the JSON compact, valid, and complete:
   ]
 }
 </final_response_json>
+- If the instructions violate the illegal prompt filter, do NOT produce the normal cybersecurity report and do NOT emit `<final_response_json>`.
+- In that refusal case, produce a brief visible markdown incident summary and end the run with exactly one hidden block using this wrapper:
+<incident_report_json>
+{
+  "category": "illegal_instructions",
+  "reason": "High-level explanation of the issue such as out-of-scope target or disallowed action request",
+  "recommended_action": "Ask the user for a new pentest instruction that stays within TARGET_SCOPE and excludes disallowed actions",
+  "report_content": "# INCIDENT REPORT\n\n- Summary: General issue summary\n- Reason: High-level refusal reason\n- Recommended Action: High-level next step for the user"
+}
+</incident_report_json>
 
 Rules:
-- `report_content` must match the visible report you present to the user.
+- For normal pentest runs, `report_content` in `<final_response_json>` must match the visible report you present.
 - `found_vulnerabilities` must include only high-confidence findings you actually verified.
 - If no verified vulnerabilities were found, use an empty array.
-- Do not mention this block in visible prose.
+- For incident refusals, keep the response high level and do not include exploit instructions or operational attack guidance.
+- Do not mention the hidden block in visible prose.

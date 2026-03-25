@@ -23,6 +23,7 @@ from cobra_lite.services.state_store import JsonStateStore
 GRAPH_UPDATE_BLOCK_RE = re.compile(r"<graph_update>\s*(.*?)\s*</graph_update>", re.IGNORECASE | re.DOTALL)
 MISSION_OVERVIEW_BLOCK_RE = re.compile(r"<mission_overview>\s*(.*?)\s*</mission_overview>", re.IGNORECASE | re.DOTALL)
 FINAL_RESPONSE_BLOCK_RE = re.compile(r"<final_response_json>\s*(.*?)\s*</final_response_json>", re.IGNORECASE | re.DOTALL)
+INCIDENT_REPORT_BLOCK_RE = re.compile(r"<incident_report_json>\s*(.*?)\s*</incident_report_json>", re.IGNORECASE | re.DOTALL)
 GRAPH_SUGGESTIONS_HEADER_RE = re.compile(r"^#{0,3}\s*graph suggestions\s*:?\s*$", re.IGNORECASE)
 ANTHROPIC_AUTH_INVALID_RE = re.compile(
     r"(invalid|incorrect|unauthorized|forbidden).*(x-api-key|api key)|authentication[_\s-]?error",
@@ -77,6 +78,25 @@ def _extract_final_response_block(text: str) -> tuple[str, dict[str, Any] | None
         parsed = None
 
     cleaned = FINAL_RESPONSE_BLOCK_RE.sub("", raw, count=1).strip()
+    return cleaned, parsed
+
+
+def _extract_incident_report_block(text: str) -> tuple[str, dict[str, Any] | None]:
+    raw = str(text or "")
+    match = INCIDENT_REPORT_BLOCK_RE.search(raw)
+    if not match:
+        return raw.strip(), None
+
+    payload_raw = (match.group(1) or "").strip()
+    parsed: dict[str, Any] | None = None
+    try:
+        loaded = json.loads(payload_raw)
+        if isinstance(loaded, dict):
+            parsed = loaded
+    except Exception:
+        parsed = None
+
+    cleaned = INCIDENT_REPORT_BLOCK_RE.sub("", raw, count=1).strip()
     return cleaned, parsed
 
 
@@ -656,15 +676,20 @@ class MissionRunner:
         final_text_raw = str(result.get("final_observation") or "Task completed.").strip()
         text_without_graph_block, graph_update = _extract_graph_update_block(final_text_raw)
         text_without_overview_block, mission_overview = _extract_mission_overview_block(text_without_graph_block)
-        text_without_response_block, final_response_payload = _extract_final_response_block(text_without_overview_block)
+        text_without_incident_block, incident_report_payload = _extract_incident_report_block(text_without_overview_block)
+        text_without_response_block, final_response_payload = _extract_final_response_block(text_without_incident_block)
         final_text, graph_suggestions = _extract_graph_suggestions(text_without_response_block)
         created_graph_nodes = self._apply_graph_updates(session_id, graph_update, graph_suggestions)
         result["final_observation"] = final_text
-        result["final_response"] = _build_final_response_payload(
-            final_text,
-            final_response_payload,
-            FINAL_RESPONSE_AUTH_TOKEN,
-        )
+        result["incident_report"] = incident_report_payload if isinstance(incident_report_payload, dict) else None
+        if result["incident_report"] is None:
+            result["final_response"] = _build_final_response_payload(
+                final_text,
+                final_response_payload,
+                FINAL_RESPONSE_AUTH_TOKEN,
+            )
+        else:
+            result["final_response"] = None
         if not mission_overview:
             mission_overview = _build_structured_mission_overview(existing_overview, prompt_text, final_text)
         else:

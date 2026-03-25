@@ -20,6 +20,7 @@ from cobra_lite.config import (
     FINAL_RESPONSE_CALLBACK_TIMEOUT_SECONDS,
     FINAL_RESPONSE_CALLBACK_URL,
     FINAL_RESPONSE_FILE,
+    INCIDENT_FILE,
     OPENCLAW_STATE_DIR,
     REPORT_FILE,
 )
@@ -36,6 +37,7 @@ REPORT_STRUCTURE_MARKERS = (
     "overall risk level:",
     "executive summary",
 )
+INCIDENT_REPORT_BLOCK_RE = re.compile(r"<incident_report_json>\s*(.*?)\s*</incident_report_json>", re.IGNORECASE | re.DOTALL)
 
 
 def _resolve_instructions() -> str:
@@ -150,6 +152,20 @@ def _write_report(path: Path, report_text: str) -> None:
 def _write_final_response(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_incident(path: Path, incident_text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = str(incident_text or "").strip()
+    path.write_text((normalized + "\n") if normalized else "", encoding="utf-8")
+
+
+def _remove_file_if_exists(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
 
 
 def _session_log_path(run_session_id: str) -> Path:
@@ -491,6 +507,94 @@ def _notify_callback(report_text: str, final_response_payload: dict[str, object]
     print(f"Callback delivery failed: {last_error}", file=sys.stderr)
 
 
+def _incident_content(final_text: str, incident_payload: dict[str, object] | None) -> str:
+    payload = incident_payload if isinstance(incident_payload, dict) else {}
+    report_content = str(payload.get("report_content") or "").strip()
+    if report_content:
+        return report_content
+    normalized = str(final_text or "").strip()
+    if normalized:
+        return normalized
+    reason = str(payload.get("reason") or "The supplied instructions were refused by the illegal prompt filter.").strip()
+    recommended_action = str(
+        payload.get("recommended_action")
+        or "Provide new instructions that stay within TARGET_SCOPE and remain limited to authorized pentesting activity."
+    ).strip()
+    return "\n".join(
+        [
+            "# INCIDENT REPORT",
+            "",
+            f"- Summary: {reason}",
+            f"- Recommended Action: {recommended_action}",
+        ]
+    ).strip()
+
+
+def _extract_incident_payload(text: str) -> tuple[str, dict[str, object] | None]:
+    raw = str(text or "")
+    match = INCIDENT_REPORT_BLOCK_RE.search(raw)
+    if not match:
+        return raw.strip(), None
+
+    payload_raw = (match.group(1) or "").strip()
+    parsed: dict[str, object] | None = None
+    try:
+        loaded = json.loads(payload_raw)
+        if isinstance(loaded, dict):
+            parsed = loaded
+    except Exception:
+        parsed = None
+
+    cleaned = INCIDENT_REPORT_BLOCK_RE.sub("", raw, count=1).strip()
+    return cleaned, parsed
+
+
+def _looks_like_incident(final_text: str, incident_payload: dict[str, object] | None = None) -> bool:
+    if isinstance(incident_payload, dict):
+        return True
+
+    normalized = str(final_text or "").strip().lower()
+    if not normalized:
+        return False
+
+    incident_markers = (
+        "# incident report",
+        "incident report",
+        "illegal prompt filter",
+        "instructions violate the illegal prompt filter",
+        "out-of-scope targeting",
+        "disallowed security actions",
+    )
+    return any(marker in normalized for marker in incident_markers)
+
+
+def _recover_incident_from_session(run_session_id: str) -> tuple[str, dict[str, object] | None] | None:
+    records = _load_session_records(run_session_id)
+    assistant_texts = _collect_session_text(records, role="assistant")
+    if not assistant_texts:
+        return None
+
+    for text in reversed(assistant_texts):
+        cleaned, payload = _extract_incident_payload(text)
+        if _looks_like_incident(cleaned, payload):
+            return cleaned, payload
+
+    latest = str(assistant_texts[-1] or "").strip()
+    if _looks_like_incident(latest, None):
+        return latest, None
+    return None
+
+
+def _finalize_incident(final_text: str, incident_payload: dict[str, object] | None) -> int:
+    incident_text = _incident_content(final_text, incident_payload)
+    _write_incident(INCIDENT_FILE, incident_text)
+    _remove_file_if_exists(REPORT_FILE)
+    _remove_file_if_exists(FINAL_RESPONSE_FILE)
+    print(f"Incident report written to {INCIDENT_FILE}")
+    print("Removed normal pentest artifacts and terminated because the model classified the instructions as an incident.")
+    return 0
+
+
 def main() -> int:
     try:
         instructions = _resolve_instructions()
@@ -531,6 +635,10 @@ def main() -> int:
         print(f"Failure report written to {REPORT_FILE}")
         return 1
     except MissionRunError as exc:
+        recovered_incident = _recover_incident_from_session(run_session_id)
+        if recovered_incident is not None:
+            incident_text, incident_payload = recovered_incident
+            return _finalize_incident(incident_text, incident_payload)
         failure_text = f"Run failed\n\n{exc}"
         final_report, failure_payload = _normalize_artifacts(
             report_text=failure_text,
@@ -548,6 +656,10 @@ def main() -> int:
 
     final_report = str(outcome.get("result", {}).get("final_observation") or "").strip()
     final_response = outcome.get("result", {}).get("final_response")
+    incident_report = outcome.get("result", {}).get("incident_report")
+    if _looks_like_incident(final_report, incident_report if isinstance(incident_report, dict) else None):
+        return _finalize_incident(final_report, incident_report if isinstance(incident_report, dict) else None)
+
     final_report, final_payload = _normalize_artifacts(
         report_text=final_report,
         final_payload=final_response if isinstance(final_response, dict) else None,
