@@ -454,10 +454,10 @@ def _notify_callback_via_curl(callback_url: str, body: bytes, headers: dict[str,
     return detail
 
 
-def _notify_callback(report_text: str, final_response_payload: dict[str, object], run_session_id: str) -> None:
+def _notify_callback(report_text: str, final_response_payload: dict[str, object], run_session_id: str) -> tuple[bool, str]:
     callback_url = str(FINAL_RESPONSE_CALLBACK_URL or "").strip()
     if not callback_url:
-        return
+        return True, ""
 
     payload = {
         "session_id": run_session_id,
@@ -484,7 +484,7 @@ def _notify_callback(report_text: str, final_response_payload: dict[str, object]
                 response.read()
                 if 200 <= response.status < 300:
                     print(f"Callback delivered to {callback_url}")
-                    return
+                    return True, ""
                 last_error = f"unexpected callback status {response.status}"
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace").strip()
@@ -499,12 +499,21 @@ def _notify_callback(report_text: str, final_response_payload: dict[str, object]
 
     curl_error = _notify_callback_via_curl(callback_url, body, headers)
     if curl_error is None:
-        return
+        return True, ""
     if last_error:
         last_error = f"{last_error}; curl: {curl_error}"
     else:
         last_error = f"curl: {curl_error}"
-    print(f"Callback delivery failed: {last_error}", file=sys.stderr)
+    return False, last_error
+
+
+def _persist_outputs_and_notify(report_text: str, final_payload: dict[str, object], run_session_id: str) -> str:
+    _write_report(REPORT_FILE, report_text)
+    _write_final_response(FINAL_RESPONSE_FILE, final_payload)
+    callback_ok, callback_error = _notify_callback(report_text, final_payload, run_session_id)
+    if callback_ok:
+        return ""
+    return callback_error or "Callback delivery failed."
 
 
 def _incident_content(final_text: str, incident_payload: dict[str, object] | None) -> str:
@@ -628,11 +637,12 @@ def main() -> int:
             run_session_id=run_session_id,
             failure_reason=failure_text,
         )
-        _write_report(REPORT_FILE, final_report)
-        _write_final_response(FINAL_RESPONSE_FILE, failure_payload)
-        _notify_callback(final_report, failure_payload, run_session_id)
+        callback_error = _persist_outputs_and_notify(final_report, failure_payload, run_session_id)
         print("\nRun interrupted by user.", file=sys.stderr)
         print(f"Failure report written to {REPORT_FILE}")
+        if callback_error:
+            print(f"Callback delivery failed: {callback_error}", file=sys.stderr)
+            return 2
         return 1
     except MissionRunError as exc:
         recovered_incident = _recover_incident_from_session(run_session_id)
@@ -647,11 +657,12 @@ def main() -> int:
             run_session_id=run_session_id,
             failure_reason=str(exc),
         )
-        _write_report(REPORT_FILE, final_report)
-        _write_final_response(FINAL_RESPONSE_FILE, failure_payload)
-        _notify_callback(final_report, failure_payload, run_session_id)
+        callback_error = _persist_outputs_and_notify(final_report, failure_payload, run_session_id)
         print(str(exc), file=sys.stderr)
         print(f"Failure report written to {REPORT_FILE}")
+        if callback_error:
+            print(f"Callback delivery failed: {callback_error}", file=sys.stderr)
+            return 2
         return 1
 
     final_report = str(outcome.get("result", {}).get("final_observation") or "").strip()
@@ -666,12 +677,13 @@ def main() -> int:
         instructions=instructions,
         run_session_id=run_session_id,
     )
-    _write_report(REPORT_FILE, final_report)
-    _write_final_response(FINAL_RESPONSE_FILE, final_payload)
-    _notify_callback(final_report, final_payload, run_session_id)
+    callback_error = _persist_outputs_and_notify(final_report, final_payload, run_session_id)
 
     print(f"Final report written to {REPORT_FILE}")
     print(f"Final response written to {FINAL_RESPONSE_FILE}")
+    if callback_error:
+        print(f"Callback delivery failed: {callback_error}", file=sys.stderr)
+        return 2
     return 0
 
 
