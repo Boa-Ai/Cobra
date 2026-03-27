@@ -549,6 +549,12 @@ def send_to_openclaw(
 
         return len(actions)
 
+    parsed_gateway_url = urlparse(gateway_url if "://" in gateway_url else f"http://{gateway_url}")
+    use_local_cli = (
+        (COBRA_ALLOW_NONSTREAM_FALLBACK or not COBRA_REQUIRE_LIVE_TELEMETRY)
+        and (parsed_gateway_url.hostname or "").strip().lower() in {"127.0.0.1", "localhost", "::1"}
+    )
+
     def _send_via_gateway_ws(prompt_text: str) -> dict[str, Any]:
         import websockets
 
@@ -939,11 +945,6 @@ def send_to_openclaw(
     def _send_via_cli(prompt_text: str) -> dict[str, Any]:
         execution_id = "gateway-agent-cli"
         verbose_switch = "off" if OPENCLAW_VERBOSE_LEVEL.strip().lower() in {"off", "none", "0", "false"} else "on"
-        parsed_gateway_url = urlparse(gateway_url if "://" in gateway_url else f"http://{gateway_url}")
-        use_local_cli = (
-            (COBRA_ALLOW_NONSTREAM_FALLBACK or not COBRA_REQUIRE_LIVE_TELEMETRY)
-            and (parsed_gateway_url.hostname or "").strip().lower() in {"127.0.0.1", "localhost", "::1"}
-        )
         command = [
             "openclaw",
             "agent",
@@ -1400,6 +1401,7 @@ def send_to_openclaw(
         _raise_if_cancelled()
         errors: list[str] = []
         ws_failure_message = ""
+        cli_attempted = False
 
         def _is_terminal_telemetry_missing(reason: str) -> bool:
             reason_lc = str(reason or "").strip().lower()
@@ -1407,6 +1409,25 @@ def send_to_openclaw(
                 "no terminal actions were emitted by the gateway run" in reason_lc
                 or "emitted no terminal actions" in reason_lc
             )
+
+        if use_local_cli:
+            if progress_callback:
+                progress_callback(
+                    {
+                        "type": "run_status",
+                        "data": {
+                            "phase": "local_cli",
+                            "detail": "Using embedded OpenClaw CLI as the primary transport for this local Cobra run.",
+                        },
+                    }
+                )
+            try:
+                cli_attempted = True
+                return _send_via_cli(prompt_text)
+            except Exception as cli_error:
+                if isinstance(cli_error, (_PolicyViolationError, RunCancelledError)):
+                    raise
+                errors.append(f"cli-preferred: {str(cli_error)}")
 
         try:
             return _send_via_gateway_ws(prompt_text)
@@ -1505,6 +1526,9 @@ def send_to_openclaw(
                     if isinstance(cli_error, RunCancelledError):
                         raise
                     errors.append(f"cli: {str(cli_error)}")
+
+        if cli_attempted:
+            raise Exception(f"Gateway error: {' | '.join(errors)}")
 
         try:
             return _send_via_cli(prompt_text)
