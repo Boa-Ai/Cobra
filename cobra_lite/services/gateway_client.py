@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import queue
@@ -76,7 +77,7 @@ def _resolve_ws_gateway_url(gateway_url: str) -> str:
 
 def _load_device_identity() -> dict[str, str] | None:
     if not OPENCLAW_IDENTITY_PATH.exists():
-        return None
+        _ensure_device_identity()
     data = json.loads(OPENCLAW_IDENTITY_PATH.read_text(encoding="utf-8"))
     for key in ("deviceId", "publicKeyPem", "privateKeyPem"):
         value = data.get(key)
@@ -87,6 +88,37 @@ def _load_device_identity() -> dict[str, str] | None:
         "publicKeyPem": data["publicKeyPem"],
         "privateKeyPem": data["privateKeyPem"],
     }
+
+
+def _ensure_device_identity() -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    if OPENCLAW_IDENTITY_PATH.exists():
+        return
+
+    OPENCLAW_IDENTITY_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key()
+    public_key_raw = public_key.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    device_id = hashlib.sha256(public_key_raw).hexdigest()
+    payload = {
+        "deviceId": device_id,
+        "publicKeyPem": public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8"),
+        "privateKeyPem": private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8"),
+    }
+    _atomic_write_json(OPENCLAW_IDENTITY_PATH, payload)
 
 
 def _load_device_token(device_id: str, role: str = "operator") -> str | None:
@@ -172,6 +204,11 @@ def extract_missing_provider(message: str) -> str | None:
         return None
     provider = (match.group(1) or "").strip().lower()
     return provider or None
+
+
+def _is_missing_scope(error_shape: dict[str, Any], scope_name: str) -> bool:
+    message = str((error_shape or {}).get("message") or "").strip().lower()
+    return f"missing scope: {scope_name.lower()}" in message
 
 
 def _atomic_write_json(pathname: Path, payload: dict[str, Any]) -> None:
@@ -882,6 +919,24 @@ def send_to_openclaw(
                         continue
 
                     if response_id == patch_request_id and not agent_sent:
+                        if not is_ok:
+                            error_message = str(error_shape.get("message") or "sessions.patch failed").strip()
+                            if _is_missing_scope(error_shape, "operator.admin"):
+                                if progress_callback:
+                                    progress_callback(
+                                        {
+                                            "type": "run_status",
+                                            "data": {
+                                                "phase": "agent_request",
+                                                "detail": (
+                                                    "Gateway denied session patch for missing operator.admin scope; "
+                                                    "continuing without verbose session patch."
+                                                ),
+                                            },
+                                        }
+                                    )
+                            else:
+                                raise Exception(error_message)
                         if progress_callback:
                             progress_callback(
                                 {

@@ -575,6 +575,25 @@ class MissionRunner:
                     "Check gateway run configuration, provider auth, and tool permissions."
                 ),
             }
+        if "device identity required" in text:
+            return {
+                "ok": False,
+                "code": "gateway_device_identity_required",
+                "message": (
+                    "Gateway requires a device identity for WebSocket connect. "
+                    "Ensure Cobra uses the gateway state directory and can generate or read its device identity."
+                ),
+            }
+        if "missing scope:" in text:
+            return {
+                "ok": False,
+                "code": "gateway_scope_denied",
+                "message": (
+                    "Gateway authentication succeeded, but the requested operator scopes were denied. "
+                    "Check the gateway auth mode/scopes, or run the local gateway in the same unscoped mode "
+                    "used by Boa's bootstrap."
+                ),
+            }
         if (
             "websocket transport is unavailable" in text
             or "gateway connect failed" in text
