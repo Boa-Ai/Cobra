@@ -689,14 +689,16 @@ def send_to_openclaw(
                                 "role": "operator",
                                 "scopes": GATEWAY_SCOPES,
                             }
-                            token = None
+                            auth_token = os.getenv("OPENCLAW_GATEWAY_TOKEN", "").strip()
                             if has_device_identity:
-                                device, token = _build_device_auth(identity, nonce=nonce, role="operator")
+                                device, device_token = _build_device_auth(identity, nonce=nonce, role="operator")
                                 params["device"] = device
+                                if device_token:
+                                    auth_token = device_token
                             auth_password = os.getenv("OPENCLAW_GATEWAY_PASSWORD", "").strip()
-                            if token or auth_password:
+                            if auth_token or auth_password:
                                 params["auth"] = {
-                                    **({"token": token} if token else {}),
+                                    **({"token": auth_token} if auth_token else {}),
                                     **({"password": auth_password} if auth_password else {}),
                                 }
                             await ws.send(
