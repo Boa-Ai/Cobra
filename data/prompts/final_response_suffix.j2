@@ -3,6 +3,7 @@ Completion payload policy:
 <final_response_json>
 {
   "title": "Very short report title for the completed assessment",
+  "severity": "One of info, low, medium, high, critical",
   "report_content": "Full visible final report content as a single JSON string",
   "found_vulnerabilities": [
     {
@@ -26,7 +27,8 @@ Completion payload policy:
 </incident_report_json>
 
 Rules:
-- `title` must be a short plain-text title that matches the final report and helps identify this specific run at a glance.
+- `title` must be a short plain-text title that uniquely identifies this specific report at a glance. Do not just reuse the first words of the report body.
+- `severity` must be one of `info`, `low`, `medium`, `high`, or `critical` and must match the actual overall report severity.
 - For normal pentest runs, `report_content` in `<final_response_json>` must match the visible report you present.
 - `found_vulnerabilities` must include only high-confidence findings you actually verified.
 - If no verified vulnerabilities were found, use an empty array.

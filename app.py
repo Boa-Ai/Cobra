@@ -66,6 +66,31 @@ REPORT_TITLE_METADATA_PREFIXES = (
     "reason:",
     "recommended action:",
 )
+REPORT_SEVERITY_ALIASES = {
+    "informational": "info",
+    "information": "info",
+    "info": "info",
+    "low": "low",
+    "moderate": "medium",
+    "medium": "medium",
+    "warning": "medium",
+    "high": "high",
+    "critical": "critical",
+}
+REPORT_SEVERITY_ORDER = {
+    "info": 0,
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "critical": 4,
+}
+REPORT_TITLE_BY_SEVERITY = {
+    "critical": "Critical findings for {target}",
+    "high": "High-risk findings for {target}",
+    "medium": "Medium-risk findings for {target}",
+    "low": "Low-risk findings for {target}",
+    "info": "Informational review for {target}",
+}
 
 
 def _resolve_instructions() -> str:
@@ -107,6 +132,14 @@ def _normalize_report_title(value: object, fallback: str = "", *, limit: int = 1
     return text
 
 
+def _normalize_report_severity(value: object, fallback: str = "") -> str:
+    normalized = re.sub(r"[^a-z]+", "", str(value or "").strip().lower())
+    if normalized in REPORT_SEVERITY_ALIASES:
+        return REPORT_SEVERITY_ALIASES[normalized]
+    fallback_value = str(fallback or "").strip().lower()
+    return REPORT_SEVERITY_ALIASES.get(fallback_value, "")
+
+
 def _strip_markdown_title_line(value: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -129,6 +162,81 @@ def _looks_like_date_line(value: str) -> bool:
     return bool(
         re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T].*)?", normalized)
         or re.fullmatch(r"[A-Z][a-z]+ \d{1,2}, \d{4}", normalized)
+    )
+
+
+def _highest_finding_severity(payload: dict[str, object]) -> str:
+    raw_findings = payload.get("found_vulnerabilities")
+    if not isinstance(raw_findings, list):
+        return ""
+    highest = ""
+    highest_rank = -1
+    for item in raw_findings:
+        if not isinstance(item, dict):
+            continue
+        severity = _normalize_report_severity(item.get("Severity") or item.get("severity"))
+        if not severity:
+            continue
+        rank = REPORT_SEVERITY_ORDER.get(severity, -1)
+        if rank > highest_rank:
+            highest = severity
+            highest_rank = rank
+    return highest
+
+
+def _severity_from_report_text(report_text: str) -> str:
+    for raw_line in str(report_text or "").splitlines():
+        clean = _strip_markdown_title_line(raw_line)
+        if not clean:
+            continue
+        overall_match = re.match(r"^(overall risk level|severity)\s*:\s*(.+)$", clean, re.IGNORECASE)
+        if overall_match:
+            severity = _normalize_report_severity(overall_match.group(2))
+            if severity:
+                return severity
+        bullet_match = re.match(r"^(finding\s+\d+\s*:\s*)?severity\s*:\s*(.+)$", clean, re.IGNORECASE)
+        if bullet_match:
+            severity = _normalize_report_severity(bullet_match.group(2))
+            if severity:
+                return severity
+    lowered = str(report_text or "").lower()
+    if "failed before a final report was produced" in lowered or "incident report" in lowered:
+        return "info"
+    return ""
+
+
+def _generate_report_severity(report_text: str, final_payload: dict[str, object] | None) -> str:
+    payload = final_payload if isinstance(final_payload, dict) else {}
+    explicit_severity = _normalize_report_severity(
+        payload.get("severity") or payload.get("report_severity") or payload.get("overall_risk_level")
+    )
+    if explicit_severity:
+        return explicit_severity
+    finding_severity = _highest_finding_severity(payload)
+    if finding_severity:
+        return finding_severity
+    content_severity = _severity_from_report_text(report_text)
+    if content_severity:
+        return content_severity
+    return "info"
+
+
+def _compose_generated_report_title(target_label: str, severity: str) -> str:
+    normalized_target = _normalize_report_title(target_label, fallback="")
+    normalized_severity = _normalize_report_severity(severity, fallback="info") or "info"
+    if normalized_target:
+        return _normalize_report_title(
+            REPORT_TITLE_BY_SEVERITY.get(normalized_severity, "Security report for {target}").format(target=normalized_target),
+            fallback=f"Security report for {normalized_target}",
+        )
+    return _normalize_report_title(
+        {
+            "critical": "Critical security findings",
+            "high": "High-risk security findings",
+            "medium": "Medium-risk security findings",
+            "low": "Low-risk security findings",
+            "info": "Security assessment summary",
+        }.get(normalized_severity, "Security assessment summary")
     )
 
 
@@ -157,21 +265,12 @@ def _generate_report_title(report_text: str, final_payload: dict[str, object] | 
         finding_match = re.match(r"^finding\s+\d+\s*:\s*(.+)$", clean, re.IGNORECASE)
         if finding_match:
             return _normalize_report_title(finding_match.group(1))
-        lowered = clean.lower()
-        if lowered in GENERIC_REPORT_TITLES or _looks_like_date_line(clean):
-            continue
-        if any(lowered.startswith(prefix) for prefix in REPORT_TITLE_METADATA_PREFIXES):
-            continue
-        if len(clean) >= 8:
-            return clean
 
     target_label, _ = _extract_target_context(instructions)
+    severity = _generate_report_severity(report_text, payload)
     if "incident report" in str(report_text or "").lower():
         return _normalize_report_title(f"Incident report for {target_label or 'authorized target'}", fallback="Incident report")
-    return _normalize_report_title(
-        f"Security report for {target_label}" if target_label else "Security assessment summary",
-        fallback="Security assessment summary",
-    )
+    return _compose_generated_report_title(target_label, severity)
 
 
 def _print_block(prefix: str, value: str) -> None:
@@ -481,6 +580,7 @@ def _build_structured_fallback_report(
 
     payload = {
         "title": _generate_report_title(report, None, instructions),
+        "severity": _generate_report_severity(report, None),
         "report_content": report,
         "found_vulnerabilities": [],
         "auth_token": FINAL_RESPONSE_AUTH_TOKEN,
@@ -509,6 +609,7 @@ def _normalize_artifacts(
     raw_vulnerabilities = payload.get("found_vulnerabilities")
     if not isinstance(raw_vulnerabilities, list):
         raw_vulnerabilities = []
+    payload["severity"] = _generate_report_severity(normalized_report, payload)
     payload["title"] = _generate_report_title(normalized_report, payload, instructions)
     payload["report_content"] = normalized_report
     payload["found_vulnerabilities"] = raw_vulnerabilities
@@ -571,6 +672,7 @@ def _notify_callback(report_text: str, final_response_payload: dict[str, object]
     payload = {
         "session_id": run_session_id,
         "report_title": str(final_response_payload.get("title") or "").strip(),
+        "report_severity": str(final_response_payload.get("severity") or "").strip(),
         "report_content": str(report_text or "").strip(),
         "final_response": final_response_payload,
     }
