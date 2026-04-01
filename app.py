@@ -38,6 +38,34 @@ REPORT_STRUCTURE_MARKERS = (
     "executive summary",
 )
 INCIDENT_REPORT_BLOCK_RE = re.compile(r"<incident_report_json>\s*(.*?)\s*</incident_report_json>", re.IGNORECASE | re.DOTALL)
+GENERIC_REPORT_TITLES = {
+    "cybersecurity risk report",
+    "incident report",
+    "executive summary",
+    "top findings at a glance",
+    "actionables",
+    "recovered run notes",
+}
+REPORT_TITLE_METADATA_PREFIXES = (
+    "overall risk level:",
+    "immediate concerns:",
+    "business impact:",
+    "recommended priority:",
+    "critical fixes this week:",
+    "important fixes this month:",
+    "items that can wait until later:",
+    "estimated effort:",
+    "estimated owner:",
+    "run session:",
+    "target url:",
+    "recovery reason:",
+    "severity:",
+    "why it matters:",
+    "impacted area:",
+    "summary:",
+    "reason:",
+    "recommended action:",
+)
 
 
 def _resolve_instructions() -> str:
@@ -65,6 +93,85 @@ def _truncate(value: str, limit: int = 280) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 3].rstrip() + "..."
+
+
+def _normalize_report_title(value: object, fallback: str = "", *, limit: int = 160) -> str:
+    text = " ".join(str(value or "").replace("\r", "\n").replace("\n", " ").split()).strip(" -:;,.#|")
+    text = text.strip("\"'`")
+    if not text:
+        text = str(fallback or "").strip()
+    if not text:
+        return ""
+    if len(text) > max(12, int(limit)):
+        text = text[: max(12, int(limit)) - 3].rstrip() + "..."
+    return text
+
+
+def _strip_markdown_title_line(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^#{1,6}\s*", "", text)
+    text = re.sub(r"^\s*[-*+]\s*", "", text)
+    text = re.sub(r"^\s*\d+\.\s*", "", text)
+    text = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"__(.*?)__", r"\1", text)
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"\1", text)
+    return _normalize_report_title(text)
+
+
+def _looks_like_date_line(value: str) -> bool:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return False
+    return bool(
+        re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T].*)?", normalized)
+        or re.fullmatch(r"[A-Z][a-z]+ \d{1,2}, \d{4}", normalized)
+    )
+
+
+def _generate_report_title(report_text: str, final_payload: dict[str, object] | None, instructions: str) -> str:
+    payload = final_payload if isinstance(final_payload, dict) else {}
+    explicit_title = _normalize_report_title(payload.get("title") or payload.get("report_title"))
+    if explicit_title and explicit_title.lower() not in GENERIC_REPORT_TITLES:
+        return explicit_title
+
+    raw_findings = payload.get("found_vulnerabilities")
+    if isinstance(raw_findings, list):
+        for item in raw_findings:
+            if not isinstance(item, dict):
+                continue
+            finding_title = _normalize_report_title(item.get("Title") or item.get("title") or item.get("name"))
+            if finding_title:
+                severity = _normalize_report_title(item.get("Severity") or item.get("severity"))
+                if severity and severity.lower() not in finding_title.lower():
+                    return _normalize_report_title(f"{severity}: {finding_title}", fallback=finding_title)
+                return finding_title
+
+    for raw_line in str(report_text or "").splitlines():
+        clean = _strip_markdown_title_line(raw_line)
+        if not clean:
+            continue
+        finding_match = re.match(r"^finding\s+\d+\s*:\s*(.+)$", clean, re.IGNORECASE)
+        if finding_match:
+            return _normalize_report_title(finding_match.group(1))
+        lowered = clean.lower()
+        if lowered in GENERIC_REPORT_TITLES or _looks_like_date_line(clean):
+            continue
+        if any(lowered.startswith(prefix) for prefix in REPORT_TITLE_METADATA_PREFIXES):
+            continue
+        if len(clean) >= 8:
+            return clean
+
+    target_label, _ = _extract_target_context(instructions)
+    if "incident report" in str(report_text or "").lower():
+        return _normalize_report_title(f"Incident report for {target_label or 'authorized target'}", fallback="Incident report")
+    return _normalize_report_title(
+        f"Security report for {target_label}" if target_label else "Security assessment summary",
+        fallback="Security assessment summary",
+    )
 
 
 def _print_block(prefix: str, value: str) -> None:
@@ -373,6 +480,7 @@ def _build_structured_fallback_report(
     ).strip()
 
     payload = {
+        "title": _generate_report_title(report, None, instructions),
         "report_content": report,
         "found_vulnerabilities": [],
         "auth_token": FINAL_RESPONSE_AUTH_TOKEN,
@@ -401,6 +509,7 @@ def _normalize_artifacts(
     raw_vulnerabilities = payload.get("found_vulnerabilities")
     if not isinstance(raw_vulnerabilities, list):
         raw_vulnerabilities = []
+    payload["title"] = _generate_report_title(normalized_report, payload, instructions)
     payload["report_content"] = normalized_report
     payload["found_vulnerabilities"] = raw_vulnerabilities
     payload["auth_token"] = FINAL_RESPONSE_AUTH_TOKEN
@@ -461,6 +570,7 @@ def _notify_callback(report_text: str, final_response_payload: dict[str, object]
 
     payload = {
         "session_id": run_session_id,
+        "report_title": str(final_response_payload.get("title") or "").strip(),
         "report_content": str(report_text or "").strip(),
         "final_response": final_response_payload,
     }

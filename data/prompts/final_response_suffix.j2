@@ -2,6 +2,7 @@ Completion payload policy:
 - For a normal pentest completion, you MUST end the run with exactly one hidden block using this wrapper:
 <final_response_json>
 {
+  "title": "Very short report title for the completed assessment",
   "report_content": "Full visible final report content as a single JSON string",
   "found_vulnerabilities": [
     {
@@ -25,6 +26,7 @@ Completion payload policy:
 </incident_report_json>
 
 Rules:
+- `title` must be a short plain-text title that matches the final report and helps identify this specific run at a glance.
 - For normal pentest runs, `report_content` in `<final_response_json>` must match the visible report you present.
 - `found_vulnerabilities` must include only high-confidence findings you actually verified.
 - If no verified vulnerabilities were found, use an empty array.
