@@ -334,8 +334,28 @@ def _normalize_vulnerability_entry(item: Any) -> dict[str, str] | None:
     }
 
 
+_HEADING_LINE_RE = re.compile(r"^\s*#{1,6}\s+\S")
+
+
+def _strip_preamble_before_first_heading(report_text: str) -> str:
+    """Drop conversational narration written before the first markdown
+    heading (mirrors the helper in app.py). Reports begin with a top-level
+    heading; chatter above it like ``I have enough data to compile the
+    report. Let me finalize.`` is not part of the report."""
+    if not report_text:
+        return report_text
+    lines = report_text.splitlines()
+    for index, line in enumerate(lines):
+        if _HEADING_LINE_RE.match(line):
+            return "\n".join(lines[index:]).strip()
+    return report_text
+
+
 def _build_final_response_payload(final_text: str, payload: dict[str, Any] | None, auth_token: str) -> dict[str, Any]:
-    report_content = str((payload or {}).get("report_content") or "").strip() or str(final_text or "").strip()
+    report_content = _strip_preamble_before_first_heading(
+        str((payload or {}).get("report_content") or "").strip()
+        or str(final_text or "").strip()
+    )
     raw_vulnerabilities = (payload or {}).get("found_vulnerabilities")
     normalized_vulnerabilities: list[dict[str, str]] = []
     if isinstance(raw_vulnerabilities, list):

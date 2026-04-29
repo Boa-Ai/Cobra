@@ -434,6 +434,26 @@ def _extract_target_context(instructions: str) -> tuple[str, str]:
     return "Authorized Target", url_match.group(0).strip() if url_match else ""
 
 
+_HEADING_LINE_RE = re.compile(r"^\s*#{1,6}\s+\S")
+
+
+def _strip_preamble_before_first_heading(report_text: str) -> str:
+    """Drop any narration the model wrote before the first markdown heading.
+
+    Reports begin with a top-level heading (e.g. ``# CYBERSECURITY RISK
+    REPORT``); anything above that — typically conversational filler such as
+    ``I have enough data to compile the report. Let me finalize.`` — is not
+    part of the report and should not be persisted, displayed, or sent in the
+    callback payload."""
+    if not report_text:
+        return report_text
+    lines = report_text.splitlines()
+    for index, line in enumerate(lines):
+        if _HEADING_LINE_RE.match(line):
+            return "\n".join(lines[index:]).strip()
+    return report_text
+
+
 def _report_looks_invalid(report_text: str) -> bool:
     normalized = str(report_text or "").strip()
     if not normalized:
@@ -596,7 +616,7 @@ def _normalize_artifacts(
     run_session_id: str,
     failure_reason: str = "",
 ) -> tuple[str, dict[str, object]]:
-    normalized_report = str(report_text or "").strip()
+    normalized_report = _strip_preamble_before_first_heading(str(report_text or "").strip())
     if _report_looks_invalid(normalized_report):
         reason = failure_reason or f"Recovered invalid final report content: {_truncate(normalized_report, 220)}"
         return _build_structured_fallback_report(
@@ -730,10 +750,12 @@ def _persist_outputs_and_notify(report_text: str, final_payload: dict[str, objec
 
 def _incident_content(final_text: str, incident_payload: dict[str, object] | None) -> str:
     payload = incident_payload if isinstance(incident_payload, dict) else {}
-    report_content = str(payload.get("report_content") or "").strip()
+    report_content = _strip_preamble_before_first_heading(
+        str(payload.get("report_content") or "").strip()
+    )
     if report_content:
         return report_content
-    normalized = str(final_text or "").strip()
+    normalized = _strip_preamble_before_first_heading(str(final_text or "").strip())
     if normalized:
         return normalized
     reason = str(payload.get("reason") or "The supplied instructions were refused by the illegal prompt filter.").strip()
